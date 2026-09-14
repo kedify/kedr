@@ -3,78 +3,91 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
-type progressMsg int
-type doneMsg struct{}
-
-type progressModel struct {
-	spinner spinner.Model
-	current int
-	total   int
-}
-
-func newProgressModel(total int) *progressModel {
-	s := spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#00afaf"))))
-	return &progressModel{spinner: s, total: total}
-}
-
-func (m *progressModel) Init() tea.Cmd { return m.spinner.Tick }
-func (m *progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch typed := msg.(type) {
-	case progressMsg:
-		m.current = int(typed)
-		return m, nil
-	case doneMsg:
-		return m, tea.Quit
-	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-	}
-}
-func (m *progressModel) View() tea.View {
-	return tea.NewView(fmt.Sprintf("%s Calculating recommendations %d/%d", m.spinner.View(), m.current, m.total))
-}
-
+// Progress renders a lightweight terminal spinner without switching terminal
+// modes or querying terminal capabilities.
 type Progress struct {
-	program *tea.Program
-	done    chan struct{}
-	mu      sync.Mutex
-	current int
+	out      io.Writer
+	total    int
+	done     chan struct{}
+	finished chan struct{}
+	stopOnce sync.Once
+	mu       sync.Mutex
+	current  int
+	lineSize int
 }
 
+// StartProgress starts a progress renderer when enabled.
 func StartProgress(total int, enabled bool) *Progress {
+	return startProgress(total, enabled, os.Stderr)
+}
+
+func startProgress(total int, enabled bool, out io.Writer) *Progress {
 	if !enabled {
 		return &Progress{}
 	}
-	p := tea.NewProgram(newProgressModel(total), tea.WithInput(nil), tea.WithOutput(os.Stderr))
-	progress := &Progress{program: p, done: make(chan struct{})}
-	go func() { _, _ = p.Run(); close(progress.done) }()
-	return progress
+	p := &Progress{out: out, total: total, done: make(chan struct{}), finished: make(chan struct{})}
+	go p.run()
+	return p
 }
 
+func (p *Progress) run() {
+	defer close(p.finished)
+	frames := spinner.Dot.Frames
+	ticker := time.NewTicker(spinner.Dot.FPS)
+	defer ticker.Stop()
+	frame := 0
+	p.render(frames[frame])
+	for {
+		select {
+		case <-ticker.C:
+			frame = (frame + 1) % len(frames)
+			p.render(frames[frame])
+		case <-p.done:
+			p.clear()
+			return
+		}
+	}
+}
+
+func (p *Progress) render(frame string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	line := fmt.Sprintf("%sCalculating recommendations %d/%d", frame, p.current, p.total)
+	p.lineSize = len([]rune(line))
+	_, _ = fmt.Fprintf(p.out, "\r%s", line)
+}
+
+func (p *Progress) clear() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _ = fmt.Fprintf(p.out, "\r%s\r", strings.Repeat(" ", p.lineSize))
+}
+
+// Increment advances the displayed count by one.
 func (p *Progress) Increment() {
-	if p.program == nil {
+	if p.done == nil {
 		return
 	}
 	p.mu.Lock()
 	p.current++
-	current := p.current
 	p.mu.Unlock()
-	p.program.Send(progressMsg(current))
 }
 
+// Stop clears the progress line and stops its renderer. It is safe to call
+// more than once.
 func (p *Progress) Stop() {
-	if p.program == nil {
+	if p.done == nil {
 		return
 	}
-	p.program.Send(doneMsg{})
-	<-p.done
+	p.stopOnce.Do(func() { close(p.done) })
+	<-p.finished
 }

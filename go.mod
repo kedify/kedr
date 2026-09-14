@@ -4,7 +4,6 @@ go 1.27.0
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/aws/aws-sdk-go-v2 v1.39.2
 	github.com/aws/aws-sdk-go-v2/config v1.31.10
@@ -20,6 +19,7 @@ require (
 )
 
 require (
+	charm.land/bubbletea/v2 v2.0.8 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.8 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.8 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.8 // indirect
