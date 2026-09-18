@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,6 +26,7 @@ import (
 	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/kedr/internal/strategy"
+	"golang.org/x/sync/errgroup"
 )
 
 type Logger interface {
@@ -41,6 +43,7 @@ type Client struct {
 	signer    *v4.Signer
 	creds     aws.CredentialsProvider
 	awsRegion string
+	querySem  chan struct{}
 }
 
 // UseHTTPClient replaces the transport, primarily for kube-apiserver service proxies.
@@ -79,7 +82,14 @@ func New(ctx context.Context, cfg *config.Config, endpoint string, logger Logger
 	if strings.HasSuffix(strings.TrimRight(endpoint, "/"), "/prometheus") && headers.Get("X-Scope-OrgID") == "" {
 		headers.Set("X-Scope-OrgID", "anonymous")
 	}
-	c := &Client{baseURL: strings.TrimRight(endpoint, "/"), http: httpClient, headers: headers, cfg: cfg, logger: logger}
+	c := &Client{
+		baseURL:  strings.TrimRight(endpoint, "/"),
+		http:     httpClient,
+		headers:  headers,
+		cfg:      cfg,
+		logger:   logger,
+		querySem: make(chan struct{}, cfg.MaxWorkers),
+	}
 	if cfg.EKSManagedProm {
 		opts := []func(*awsconfig.LoadOptions) error{}
 		if cfg.EKSManagedPromRegion != nil {
@@ -123,6 +133,12 @@ type series struct {
 }
 
 func (c *Client) do(ctx context.Context, path string, params url.Values) ([]series, error) {
+	select {
+	case c.querySem <- struct{}{}:
+		defer func() { <-c.querySem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	u := c.baseURL + path + "?" + params.Encode()
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -302,6 +318,8 @@ func containsString(values []string, wanted string) bool {
 
 func (c *Client) loadMetric(ctx context.Context, metric string, object model.Object) (strategy.PodSeries, error) {
 	combined := make(strategy.PodSeries)
+	group, groupCtx := errgroup.WithContext(ctx)
+	var mu sync.Mutex
 	for start := 0; start < len(object.Pods); start += 50 {
 		end := start + 50
 		if end > len(object.Pods) {
@@ -309,21 +327,30 @@ func (c *Client) loadMetric(ctx context.Context, metric string, object model.Obj
 		}
 		batch := object
 		batch.Pods = object.Pods[start:end]
-		query := BuildMetricQuery(metric, batch, c.cfg)
-		now := time.Now().UTC().Truncate(time.Minute)
-		var raw []series
-		var err error
-		if metric == "CPULoader" {
-			raw, err = c.QueryRange(ctx, query, now.Add(-history(c.cfg)), now, timeframe(c.cfg))
-		} else {
-			raw, err = c.Query(ctx, query)
-		}
-		if err != nil {
-			return nil, err
-		}
-		for pod, values := range convertSeries(raw) {
-			combined[pod] = values
-		}
+		group.Go(func() error {
+			query := BuildMetricQuery(metric, batch, c.cfg)
+			now := time.Now().UTC().Truncate(time.Minute)
+			var raw []series
+			var err error
+			if metric == "CPULoader" {
+				raw, err = c.QueryRange(groupCtx, query, now.Add(-history(c.cfg)), now, timeframe(c.cfg))
+			} else {
+				raw, err = c.Query(groupCtx, query)
+			}
+			if err != nil {
+				return err
+			}
+			data := convertSeries(raw)
+			mu.Lock()
+			for pod, values := range data {
+				combined[pod] = values
+			}
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	return combined, nil
 }

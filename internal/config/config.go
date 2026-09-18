@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,8 +65,8 @@ type Config struct {
 	CoralogixToken            Secret            `json:"coralogix_token" yaml:"coralogix_token"`
 	OpenShift                 bool              `json:"openshift" yaml:"openshift"`
 	MaxWorkers                int               `json:"max_workers" yaml:"max_workers"`
-	DiscoveryJobBatchSize     int               `json:"discovery_job_batch_size" yaml:"discovery_job_batch_size"`
-	DiscoveryJobMaxBatches    int               `json:"discovery_job_max_batches" yaml:"discovery_job_max_batches"`
+	DiscoveryJobBatchSize     int               `json:"-" yaml:"-"`
+	DiscoveryJobMaxBatches    int               `json:"-" yaml:"-"`
 	JobGroupingLabels         []string          `json:"job_grouping_labels" yaml:"job_grouping_labels"`
 	JobGroupingLimit          int               `json:"job_grouping_limit" yaml:"job_grouping_limit"`
 	Format                    string            `json:"format" yaml:"format"`
@@ -102,6 +104,31 @@ type Config struct {
 	OOMMemoryBuffer      float64  `json:"-" yaml:"-"`
 }
 
+// MarshalJSON preserves KRR's config contract, where numeric strategy
+// arguments are represented as strings under other_args. Strategy settings
+// remain numeric in the report's strategy section.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type configAlias Config
+	var otherArgs map[string]any
+	if c.OtherArgs != nil {
+		otherArgs = make(map[string]any, len(c.OtherArgs))
+		for key, value := range c.OtherArgs {
+			switch typed := value.(type) {
+			case float64:
+				otherArgs[key] = strconv.FormatFloat(typed, 'f', -1, 64)
+			case int:
+				otherArgs[key] = strconv.Itoa(typed)
+			default:
+				otherArgs[key] = value
+			}
+		}
+	}
+	return json.Marshal(&struct {
+		*configAlias
+		OtherArgs map[string]any `json:"other_args"`
+	}{configAlias: (*configAlias)(&c), OtherArgs: otherArgs})
+}
+
 func Default(strategy string) *Config {
 	service := "aps"
 	return &Config{
@@ -109,6 +136,7 @@ func Default(strategy string) *Config {
 		ClusterValues:          []string{},
 		NamespaceValues:        []string{},
 		ResourceValues:         []string{},
+		NamedSinks:             []string{},
 		CPUMinValue:            10,
 		MemoryMinValue:         100,
 		PrometheusOtherHeaders: map[string]Secret{},
@@ -192,7 +220,7 @@ func (c *Config) Validate() error {
 	if c.AllClusters {
 		c.Clusters = "*"
 	} else {
-		c.Clusters = c.ClusterValues
+		c.Clusters = append([]string{}, c.ClusterValues...)
 	}
 	for _, raw := range c.PrometheusHeadersRaw {
 		parts := strings.SplitN(raw, ":", 2)

@@ -209,8 +209,21 @@ func SortObjects(objects []Object) {
 }
 
 func SortObjectsFromScans(scans []Scan) {
+	for i := range scans {
+		sort.Strings(scans[i].Object.Warnings)
+		sort.SliceStable(scans[i].Object.Pods, func(a, b int) bool {
+			left, right := scans[i].Object.Pods[a], scans[i].Object.Pods[b]
+			if left.Name != right.Name {
+				return left.Name < right.Name
+			}
+			return !left.Deleted && right.Deleted
+		})
+	}
 	sort.SliceStable(scans, func(i, j int) bool {
 		a, b := scans[i].Object, scans[j].Object
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
 		ac, bc := "", ""
 		if a.Cluster != nil {
 			ac = *a.Cluster
@@ -224,8 +237,8 @@ func SortObjectsFromScans(scans []Scan) {
 		if a.Namespace != b.Namespace {
 			return a.Namespace < b.Namespace
 		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
 		}
 		return a.Container < b.Container
 	})

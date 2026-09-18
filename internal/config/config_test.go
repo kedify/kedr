@@ -59,6 +59,35 @@ func TestAllClustersAndSecretSerialization(t *testing.T) {
 	}
 }
 
+func TestEmptySlicesSerializeAsArrays(t *testing.T) {
+	cfg := Default("simple")
+	// Slice flag bindings use nil when the flag is not provided.
+	cfg.ClusterValues = nil
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, field := range []string{`"clusters":[]`, `"named_sinks":[]`} {
+		if !strings.Contains(text, field) {
+			t.Fatalf("missing %s: %s", field, text)
+		}
+	}
+	for _, field := range []string{`"history_duration":"336"`, `"points_required":"100"`, `"allow_hpa":false`} {
+		if !strings.Contains(text, field) {
+			t.Fatalf("missing KRR-compatible other_args field %s: %s", field, text)
+		}
+	}
+	for _, field := range []string{"discovery_job_batch_size", "discovery_job_max_batches"} {
+		if strings.Contains(text, field) {
+			t.Fatalf("KEDR-only field %s leaked into config JSON: %s", field, text)
+		}
+	}
+}
+
 func TestExcludeSeverityOnlyCSV(t *testing.T) {
 	cfg := Default("simple")
 	cfg.ShowSeverity = false
