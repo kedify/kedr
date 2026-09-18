@@ -3,3 +3,10 @@
 /coverage.out
 *.prof
 .DS_Store
+
+/kedr.canonical.json
+/kedr.json
+/krr.canonical.json
+/krr.json
+/index.html
+
