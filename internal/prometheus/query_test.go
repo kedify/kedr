@@ -2,7 +2,6 @@ package prometheus
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
+	"github.com/kedify/recommender/analysis"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -54,9 +54,10 @@ func TestMetricQueries(t *testing.T) {
 }
 
 func TestConvertSeriesPrefersKubelet(t *testing.T) {
-	input := []series{{Metric: map[string]string{"pod": "p", "job": "z"}, Value: []json.RawMessage{json.RawMessage("1"), json.RawMessage(`"2"`)}}, {Metric: map[string]string{"pod": "p", "job": "kubelet"}, Value: []json.RawMessage{json.RawMessage("1"), json.RawMessage(`"3"`)}}}
-	got := convertSeries(input)
-	if got["p"][0].Value != 3 {
+	input := []sampledSeries{{labels: map[string]string{"pod": "p", "job": "z", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 2}}}, {labels: map[string]string{"pod": "p", "job": "kubelet", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 3}}}}
+	object := model.Object{UID: "workload", Container: "main", Pods: []model.Pod{{Name: "p", UID: "pod", Release: "A", CreatedAt: 1}}}
+	got, excluded := convertUsage(input, object, analysis.SampleGauge)
+	if excluded || len(got) != 1 || got[0].Samples[0].Value != 3 {
 		t.Fatalf("got=%v", got)
 	}
 }
@@ -70,7 +71,7 @@ func TestMetricBatchesRunConcurrentlyWithinWorkerLimit(t *testing.T) {
 	}
 
 	var active, maximum atomic.Int32
-	started := make(chan struct{}, 3)
+	started := make(chan struct{}, 16)
 	release := make(chan struct{})
 	client.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		current := active.Add(1)
@@ -89,7 +90,8 @@ func TestMetricBatchesRunConcurrentlyWithinWorkerLimit(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, loadErr := client.loadMetric(context.Background(), "MaxMemoryLoader", model.Object{Namespace: "default", Container: "app", Pods: pods})
+		now := time.Now()
+		_, loadErr := client.loadMetric(context.Background(), "MemoryUsage", model.Object{Namespace: "default", Container: "app", Pods: pods}, now.Add(-time.Hour), now)
 		done <- loadErr
 	}()
 
@@ -105,7 +107,7 @@ func TestMetricBatchesRunConcurrentlyWithinWorkerLimit(t *testing.T) {
 	if err = <-done; err != nil {
 		t.Fatal(err)
 	}
-	if got := maximum.Load(); got != int32(cfg.MaxWorkers) {
+	if got := maximum.Load(); int64(got) != int64(cfg.MaxWorkers) {
 		t.Fatalf("maximum concurrent requests=%d, want %d", got, cfg.MaxWorkers)
 	}
 }

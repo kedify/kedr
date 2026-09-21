@@ -1,6 +1,10 @@
-KEDR is a Go reimplementation of the core command-line behavior and resource
-recommendation algorithms from Robusta KRR (https://github.com/robusta-dev/krr),
-used under the MIT License. The compatibility baseline is KRR commit d1ccf01.
+KEDR's command-line behavior and original report layout derive from a clean-room
+Go reimplementation of Robusta KRR (https://github.com/robusta-dev/krr), based on
+KRR commit d1ccf01 and used under the MIT License.
+
+Resource recommendation calculations now use github.com/kedify/recommender;
+KEDR no longer promises KRR-compatible recommendation semantics. That dependency
+is governed by its own LICENSE and PUBLIC_SOURCE_LICENSE, not KEDR's MIT license.
 
 KEDR is not Robusta SaaS and does not include Robusta's web UI, HolmesGPT,
 publishing integrations, enforcer, or Helm chart.

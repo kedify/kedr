@@ -110,23 +110,20 @@ func Run(ctx context.Context, cfg *config.Config) error {
 					return groupCtx.Err()
 				}
 				defer func() { <-sem }()
-				pods, podErr := state.prom.LoadPods(groupCtx, object)
-				if podErr != nil {
-					log.Debugf("historical pod lookup failed for %s/%s: %v", object.Namespace, object.Name, podErr)
+				var observationErr error
+				object, observationErr = loader.Observe(groupCtx, state.clients, object)
+				if observationErr != nil {
+					log.Warnf("identity/inventory lookup failed for %s/%s: %v", object.Namespace, object.Name, observationErr)
+					object.Warnings = append(object.Warnings, "IdentityInventoryCollectionFailed")
 				}
-				if len(pods) == 0 {
-					pods, podErr = loader.LoadCurrentPods(groupCtx, state.clients, object)
-					if podErr != nil {
-						log.Warnf("pod lookup failed for %s/%s: %v", object.Namespace, object.Name, podErr)
-					} else if len(pods) > 0 {
-						object.Warnings = append(object.Warnings, "NoPrometheusPods")
-					}
-				}
-				object.Pods = pods
+				object = state.prom.HistoricalPods(groupCtx, object)
 				metrics, metricWarnings := state.prom.Gather(groupCtx, object)
 				object.Warnings = append(object.Warnings, metricWarnings...)
-				raw := strategy.Run(cfg, metrics, object)
-				scan := recommend.Scan(cfg, object, raw)
+				raw, analyzeErr := strategy.Run(cfg, metrics, object)
+				if analyzeErr != nil {
+					return analyzeErr
+				}
+				scan := recommend.Scan(object, raw)
 				mu.Lock()
 				scans = append(scans, scan)
 				mu.Unlock()
@@ -175,14 +172,21 @@ func Run(ctx context.Context, cfg *config.Config) error {
 }
 
 func description(cfg *config.Config) string {
-	hpa := ""
-	if !cfg.AllowHPA {
-		hpa = "\n\nThis strategy does not work with objects with HPA defined (Horizontal Pod Autoscaler).\nIf HPA is defined for CPU or Memory, the strategy will return \"?\" for that resource.\nYou can override this behaviour by passing the --allow-hpa flag"
-	}
+	percentile, limit := cfg.CPUPercentile, "unchanged (requests only)"
 	if cfg.Strategy == "simple_limit" {
-		return fmt.Sprintf("[b]Simple_Limit Strategy[/b]\n\nCPU request: %g%% percentile, limit: %g%% percentile\nMemory request: max + %g%%, limit: max + %g%%\nHistory: %g hours\nStep: %g minutes\n\nAll parameters can be customized. For example: `kedr simple_limit --cpu_request=66 --cpu_limit=96 --memory_buffer_percentage=15 --history_duration=24 --timeframe_duration=0.5`%s\n\nLearn more: [underline]https://github.com/kedify/kedr#strategies[/underline]", cfg.CPURequest, cfg.CPULimit, cfg.MemoryBufferPercent, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.TimeframeDuration, hpa)
+		percentile, limit = cfg.CPURequest, fmt.Sprintf("request × %g", cfg.CPULimitRatio)
 	}
-	return fmt.Sprintf("[b]Simple Strategy[/b]\n\nCPU request: %g%% percentile, limit: unset\nMemory request: max + %g%%, limit: max + %g%%\nHistory: %g hours\nStep: %g minutes\n\nAll parameters can be customized. For example: `kedr simple --cpu_percentile=90 --memory_buffer_percentage=15 --history_duration=24 --timeframe_duration=0.5`%s\n\nLearn more: [underline]https://github.com/kedify/kedr#strategies[/underline]", cfg.CPUPercentile, cfg.MemoryBufferPercent, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.TimeframeDuration, hpa)
+	description := fmt.Sprintf("[b]Kedify Recommender — %s[/b]\n\nCPU request: per-series nearest-rank P%g, maximum across replicas; limit: %s\nMemory: selected-release peak + %g%%; request/limit ratio 1\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\nRetain up to %d releases: newest for sizing, previous releases for comparison only.\nShared analyzer history, coverage, freshness, inventory and material-change guards apply.", cfg.Strategy, percentile, limit, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.MinimumHistoryHours, cfg.ReleaseHistory)
+	if cfg.UseOOMKillData {
+		description += "\nOOMKilled observations are included; unknown event-time limits use the analyzer's conservative fallback."
+	}
+	if cfg.DetectMemoryLeaks {
+		description += "\nPotential memory-leak detection is enabled (advisory; does not change sizing)."
+	}
+	if !cfg.AllowHPA {
+		description += "\nHPA-managed resources are suppressed in the report; --allow-hpa overrides this. Raw analysis remains available for auditing."
+	}
+	return description
 }
 
 var isTerminal = func(file *os.File) bool {

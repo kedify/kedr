@@ -14,7 +14,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,9 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/kedify/kedr/internal/config"
-	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/kedr/internal/strategy"
-	"golang.org/x/sync/errgroup"
 )
 
 type Logger interface {
@@ -204,6 +201,16 @@ func (c *Client) Query(ctx context.Context, query string) ([]series, error) {
 	return c.do(ctx, "/api/v1/query", url.Values{"query": {query}})
 }
 
+func (c *Client) queryAt(ctx context.Context, query string, at time.Time) ([]series, error) {
+	return c.do(ctx, "/api/v1/query", url.Values{"query": {query}, "time": {strconv.FormatFloat(float64(at.UnixMilli())/1000, 'f', 3, 64)}})
+}
+
+// QuerySamples uses an instant range-vector selector, not query_range: every
+// stored scrape (and its original timestamp) survives, regardless of query step.
+func (c *Client) QuerySamples(ctx context.Context, selector string, start, end time.Time) ([]series, error) {
+	return c.queryAt(ctx, fmt.Sprintf("%s[%dms]", selector, end.Sub(start).Milliseconds()), end)
+}
+
 func (c *Client) QueryRange(ctx context.Context, query string, start, end time.Time, step time.Duration) ([]series, error) {
 	return c.do(ctx, "/api/v1/query_range", url.Values{
 		"query": {query}, "start": {strconv.FormatInt(start.Unix(), 10)}, "end": {strconv.FormatInt(end.Unix(), 10)},
@@ -237,122 +244,6 @@ func parsePair(raw []json.RawMessage) (strategy.Point, error) {
 	}
 	number, err := strconv.ParseFloat(value, 64)
 	return strategy.Point{Time: timestamp, Value: number}, err
-}
-
-func convertSeries(input []series) strategy.PodSeries {
-	grouped := make(map[string][]series)
-	for _, item := range input {
-		name := item.Metric["pod"]
-		if name == "" {
-			name = item.Metric["container"]
-		}
-		if name == "" {
-			name = item.Metric["node"]
-		}
-		grouped[name] = append(grouped[name], item)
-	}
-	result := make(strategy.PodSeries)
-	for name, candidates := range grouped {
-		chosen := candidates[0]
-		for _, item := range candidates {
-			if item.Metric["job"] == "kubelet" {
-				chosen = item
-				break
-			}
-			if item.Metric["job"] < chosen.Metric["job"] {
-				chosen = item
-			}
-		}
-		values := chosen.Values
-		if len(values) == 0 && len(chosen.Value) > 0 {
-			values = [][]json.RawMessage{chosen.Value}
-		}
-		for _, raw := range values {
-			if point, err := parsePair(raw); err == nil {
-				result[name] = append(result[name], point)
-			}
-		}
-	}
-	return result
-}
-
-func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metrics, []string) {
-	metrics := []string{"MaxMemoryLoader", "CPUAmountLoader", "MemoryAmountLoader"}
-	if c.cfg.Strategy == "simple" {
-		metrics = append(metrics, "PercentileCPULoader")
-	} else {
-		metrics = append(metrics, "CPULoader")
-	}
-	if c.cfg.UseOOMKillData {
-		metrics = append(metrics, "MaxOOMKilledMemoryLoader")
-	}
-	result := make(strategy.Metrics)
-	warnings := []string{}
-	for _, metric := range metrics {
-		data, err := c.loadMetric(ctx, metric, object)
-		if err != nil {
-			c.logger.Warnf("failed to gather %s for %s/%s: %v", metric, object.Namespace, object.Name, err)
-			data = strategy.PodSeries{}
-		}
-		if len(data) == 0 {
-			if strings.Contains(metric, "CPU") && !containsString(warnings, "NoPrometheusCPUMetrics") {
-				warnings = append(warnings, "NoPrometheusCPUMetrics")
-			}
-			if strings.Contains(metric, "Memory") && !containsString(warnings, "NoPrometheusMemoryMetrics") {
-				warnings = append(warnings, "NoPrometheusMemoryMetrics")
-			}
-		}
-		result[metric] = data
-	}
-	return result, warnings
-}
-
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *Client) loadMetric(ctx context.Context, metric string, object model.Object) (strategy.PodSeries, error) {
-	combined := make(strategy.PodSeries)
-	group, groupCtx := errgroup.WithContext(ctx)
-	var mu sync.Mutex
-	for start := 0; start < len(object.Pods); start += 50 {
-		end := start + 50
-		if end > len(object.Pods) {
-			end = len(object.Pods)
-		}
-		batch := object
-		batch.Pods = object.Pods[start:end]
-		group.Go(func() error {
-			query := BuildMetricQuery(metric, batch, c.cfg)
-			now := time.Now().UTC().Truncate(time.Minute)
-			var raw []series
-			var err error
-			if metric == "CPULoader" {
-				raw, err = c.QueryRange(groupCtx, query, now.Add(-history(c.cfg)), now, timeframe(c.cfg))
-			} else {
-				raw, err = c.Query(groupCtx, query)
-			}
-			if err != nil {
-				return err
-			}
-			data := convertSeries(raw)
-			mu.Lock()
-			for pod, values := range data {
-				combined[pod] = values
-			}
-			mu.Unlock()
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return nil, err
-	}
-	return combined, nil
 }
 
 func history(cfg *config.Config) time.Duration {

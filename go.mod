@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.31.10
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.14
 	github.com/aws/aws-sdk-go-v2/service/sts v1.38.5
+	github.com/kedify/recommender v0.0.0-20260909124919-6eb238622aed
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/sync v0.22.0
@@ -17,6 +18,9 @@ require (
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 )
+
+// Local development: includes the unreleased OOM and memory-leak extensions.
+replace github.com/kedify/recommender => ../recommender
 
 require (
 	charm.land/bubbletea/v2 v2.0.8 // indirect

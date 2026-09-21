@@ -18,6 +18,38 @@ func Parse(value string) (float64, error) {
 	return q.AsApproximateFloat64(), nil
 }
 
+// FormatCPU always renders cores rounded to the nearest whole millicore.
+func FormatCPU(cores float64) string {
+	millicores := cores * 1000
+	if math.IsNaN(millicores) || math.IsInf(millicores, 0) {
+		return "?"
+	}
+	return wholeNumber(millicores) + "m"
+}
+
+// FormatMemory uses binary units rounded to whole numbers. Prefer the smaller
+// unit until the next unit reaches 10, matching the existing report convention.
+func FormatMemory(bytes float64) string {
+	if math.IsNaN(bytes) || math.IsInf(bytes, 0) {
+		return "?"
+	}
+	units := [...]string{"", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"}
+	unit := 0
+	for unit < len(units)-1 && math.Abs(bytes) >= 10*1024 {
+		bytes /= 1024
+		unit++
+	}
+	return wholeNumber(bytes) + units[unit]
+}
+
+func wholeNumber(value float64) string {
+	text := strconv.FormatFloat(math.Round(value), 'f', 0, 64)
+	if text == "-0" {
+		return "0"
+	}
+	return text
+}
+
 func Format(value float64) string {
 	if math.IsNaN(value) {
 		return "?"
@@ -41,13 +73,4 @@ func Format(value float64) string {
 		}
 	}
 	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(value, 'f', 6, 64), "0"), ".")
-}
-
-func Diff(current, recommended float64, multiplier int) string {
-	d := (recommended - current) * float64(multiplier)
-	sign := "+"
-	if d < 0 {
-		sign, d = "-", -d
-	}
-	return fmt.Sprintf("%s%s", sign, Format(d))
 }

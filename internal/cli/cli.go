@@ -65,6 +65,9 @@ func strategyCommand(name string) *cobra.Command {
 	cfg := config.Default(name)
 	b := &bindings{}
 	cmd := &cobra.Command{Use: name, Short: "Run the " + name + " recommendation strategy", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if cmd.Flags().Changed("cpu-limit") {
+			return usageError{errors.New("--cpu-limit (percentile) is no longer supported; use --cpu-limit-ratio (limit/request multiplier, default 5)")}
+		}
 		applyPointers(cmd, cfg, b)
 		if err := cfg.Validate(); err != nil {
 			return usageError{err}
@@ -97,7 +100,7 @@ func strategyCommand(name string) *cobra.Command {
 	f.StringVar(&b.coralogix, "coralogix-token", "", "Coralogix token")
 	f.BoolVar(&cfg.OpenShift, "openshift", false, "Use the OpenShift service-account token for Prometheus")
 	f.IntVar(&cfg.CPUMinValue, "cpu-min", 10, "Minimum recommended CPU in millicores")
-	f.IntVar(&cfg.MemoryMinValue, "mem-min", 100, "Minimum recommended memory in MB")
+	f.IntVar(&cfg.MemoryMinValue, "mem-min", 100, "Minimum recommended memory in MiB")
 	f.IntVarP(&cfg.MaxWorkers, "max-workers", "w", 10, "Maximum concurrent workers")
 	f.StringVar(&cfg.JobGroupingRaw, "job-grouping-labels", "", "Comma-separated labels for GroupedJob recommendations")
 	f.IntVar(&cfg.JobGroupingLimit, "job-grouping-limit", 500, "Maximum jobs/pods per GroupedJob")
@@ -118,18 +121,22 @@ func strategyCommand(name string) *cobra.Command {
 
 func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 	f.Float64Var(&cfg.HistoryDuration, "history-duration", 336, "Prometheus history duration in hours")
-	f.Float64Var(&cfg.TimeframeDuration, "timeframe-duration", 1.25, "History step in minutes")
+	f.Float64Var(&cfg.TimeframeDuration, "timeframe-duration", 1.25, "Optional OOM query step in minutes; CPU/memory use native scrape samples")
+	f.Float64Var(&cfg.MinimumHistoryHours, "minimum-history-hours", 168, "Minimum observed history required for sizing, independent of query duration")
+	f.IntVar(&cfg.ReleaseHistory, "release-history", 3, "Number of releases to retain: newest for sizing, older releases for comparison only")
+	f.BoolVar(&cfg.DetectMemoryLeaks, "detect-memory-leaks", false, "Enable advisory potential memory-leak detection")
 	if name == "simple" {
 		f.Float64Var(&cfg.CPUPercentile, "cpu-percentile", 95, "CPU recommendation percentile")
 	} else {
 		f.Float64Var(&cfg.CPURequest, "cpu-request", 66, "CPU request percentile")
-		f.Float64Var(&cfg.CPULimit, "cpu-limit", 96, "CPU limit percentile")
+		f.Float64Var(&cfg.CPULimitRatio, "cpu-limit-ratio", 5, "CPU limit/request multiplier (at least 1)")
+		f.Float64("cpu-limit", 0, "Removed: use --cpu-limit-ratio instead of a percentile")
 	}
 	f.Float64Var(&cfg.MemoryBufferPercent, "memory-buffer-percentage", 15, "Memory peak buffer percentage")
 	f.IntVar(&cfg.PointsRequired, "points-required", 100, "Required metric points")
 	f.BoolVar(&cfg.AllowHPA, "allow-hpa", false, "Recommend resources managed by an HPA")
 	f.BoolVar(&cfg.UseOOMKillData, "use-oomkill-data", false, "Include OOM-kill history")
-	f.Float64Var(&cfg.OOMMemoryBuffer, "oom-memory-buffer-percentage", 25, "OOM-kill memory buffer percentage")
+	f.Float64Var(&cfg.OOMMemoryBuffer, "oom-memory-buffer-percentage", 25, "Memory increase percentage after OOMKilled (shared OOMKilledCoefficient)")
 }
 
 func applyPointers(cmd *cobra.Command, cfg *config.Config, b *bindings) {

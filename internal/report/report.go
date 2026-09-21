@@ -49,14 +49,14 @@ func Render(value model.Report, cfg *config.Config, color bool) (string, error) 
 	}
 }
 
-func value(v model.MaybeValue) string {
+func value(v model.MaybeValue, format func(float64) string) string {
 	if v.Unknown {
 		return "?"
 	}
 	if !v.Set {
 		return "unset"
 	}
-	return resource.Format(v.Value)
+	return format(v.Value)
 }
 func rawValue(v model.MaybeValue) string {
 	if v.Unknown {
@@ -67,7 +67,7 @@ func rawValue(v model.MaybeValue) string {
 	}
 	return strconv.FormatFloat(v.Value, 'f', -1, 64)
 }
-func diff(current model.MaybeValue, recommended model.RecommendationValue, multiplier int) string {
+func diff(current model.MaybeValue, recommended model.RecommendationValue, multiplier int, format func(float64) string) string {
 	if !recommended.Value.Set || recommended.Value.Unknown {
 		return ""
 	}
@@ -75,18 +75,34 @@ func diff(current model.MaybeValue, recommended model.RecommendationValue, multi
 	if current.Set && !current.Unknown {
 		currentValue = current.Value
 	}
-	return resource.Diff(currentValue, recommended.Value.Value, multiplier)
+	delta := (recommended.Value.Value - currentValue) * float64(multiplier)
+	if delta < 0 {
+		if text := format(-delta); text != format(0) {
+			return "-" + text
+		}
+		return "+" + format(0) // Do not show negative zero after display rounding.
+	}
+	return "+" + format(delta)
 }
-func transition(current model.MaybeValue, recommended model.RecommendationValue, requests bool) string {
+func transition(current model.MaybeValue, recommended model.RecommendationValue, requests bool, format func(float64) string) string {
 	d := ""
 	if requests {
-		d = diff(current, recommended, 1)
+		d = diff(current, recommended, 1, format)
 		if d != "" {
 			d = "(" + d + ") "
 		}
 	}
-	return d + value(current) + " -> " + value(recommended.Value)
+	return d + value(current, format) + " -> " + value(recommended.Value, format)
 }
+
+func tableQuantity(kind model.ResourceType) func(float64) string {
+	if kind == model.CPU {
+		return resource.FormatCPU
+	}
+	return resource.FormatMemory
+}
+
+func legacyQuantity(model.ResourceType) func(float64) string { return resource.Format }
 
 func headers(cfg *config.Config, raw bool) []string {
 	h := []string{"Namespace", "Name", "Pods", "Old Pods", "Type", "Container"}
@@ -103,7 +119,7 @@ func headers(cfg *config.Config, raw bool) []string {
 			h = append(h, r+" Diff", r+" Requests", r+" Limits")
 		}
 	}
-	return h
+	return append(h, "Notes")
 }
 func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error) {
 	var b bytes.Buffer
@@ -127,9 +143,10 @@ func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error
 			if raw {
 				row = append(row, rawValue(scan.Object.Allocations.Requests[r]), rawValue(scan.Recommended.Requests[r].Value), rawValue(scan.Object.Allocations.Limits[r]), rawValue(scan.Recommended.Limits[r].Value))
 			} else {
-				row = append(row, diff(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], scan.Object.CurrentPods()), transition(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], true), transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false))
+				row = append(row, diff(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], scan.Object.CurrentPods(), resource.Format), transition(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], true, resource.Format), transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false, resource.Format))
 			}
 		}
+		row = append(row, scanNotes(scan, legacyQuantity))
 		if err := w.Write(row); err != nil {
 			return "", err
 		}
@@ -166,7 +183,8 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		}
 		row = append(row, scan.Object.Namespace, scan.Object.Name, strconv.Itoa(scan.Object.CurrentPods()), strconv.Itoa(scan.Object.DeletedPods()), scan.Object.Kind, scan.Object.Container)
 		for _, r := range model.ResourceTypes {
-			row = append(row, diff(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], scan.Object.CurrentPods()), transition(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], true), transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false))
+			format := tableQuantity(r)
+			row = append(row, diff(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], scan.Object.CurrentPods(), format), transition(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], true, format), transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false, format))
 		}
 		rows = append(rows, row)
 	}
@@ -190,7 +208,44 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	if title != "" {
 		title += "\n\n"
 	}
-	return title + t.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+	var notes strings.Builder
+	for _, scan := range report.Scans {
+		if text := scanNotes(scan, tableQuantity); text != "" {
+			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
+		}
+	}
+	return title + t.String() + "\nDiff columns: total request change across current pods; parentheses: change per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+}
+
+func scanNotes(scan model.Scan, format func(model.ResourceType) func(float64) string) string {
+	parts := append([]string(nil), scan.Object.Warnings...)
+	for _, comparison := range scan.ReleaseComparisons {
+		role := "comparison only"
+		if comparison.Release.Current {
+			role = "sizing release"
+		}
+		cpu, memory := "?", "?"
+		if comparison.CPU.AggregatedUsage.Available {
+			cpu = format(model.CPU)(comparison.CPU.AggregatedUsage.Value / 1000)
+		}
+		if comparison.Memory.AggregatedUsage.Available {
+			memory = format(model.Memory)(comparison.Memory.AggregatedUsage.Value)
+		}
+		label := comparison.Release.Name
+		if label == "" {
+			label = comparison.Release.ID
+		}
+		if comparison.Release.Image != "" {
+			label += " (" + comparison.Release.Image + ")"
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s [CPU aggregate %s; memory peak %s; memory history %.1fh]", role, label, cpu, memory, comparison.Memory.HistoryHours))
+	}
+	for _, resource := range model.ResourceTypes {
+		if info := scan.Recommended.Info[resource]; info != nil && *info != "" {
+			parts = append(parts, string(resource)+": "+*info)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func renderHTML(report model.Report, cfg *config.Config) (string, error) {

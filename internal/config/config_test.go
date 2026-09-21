@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,47 @@ func TestValidateDefaultsAndAliases(t *testing.T) {
 	}
 	if got := strings.Join(cfg.JobGroupingLabels, ","); got != "app,team" {
 		t.Fatalf("labels=%q", got)
+	}
+}
+
+func TestAnalyzerPolicyMapping(t *testing.T) {
+	for _, name := range []string{"simple", "simple_limit"} {
+		cfg := Default(name)
+		cfg.DetectMemoryLeaks = true
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		policy, err := cfg.AnalysisPolicy()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if policy.Memory.LeakDetection == nil || policy.Memory.OOMKilledCoefficient != 1.25 || policy.Memory.LimitsToRequestsRatio != 1 || policy.Evidence.MinimumHistorySeconds != 7*86400 || policy.CPU.RequestsOnly != (name == "simple") {
+			t.Fatalf("wrong policy: %+v", policy)
+		}
+		cfg.HistoryDuration = 24
+		policy, _ = cfg.AnalysisPolicy()
+		if policy.Evidence.MinimumHistorySeconds != 7*86400 {
+			t.Fatal("short query weakened sizing guard")
+		}
+	}
+}
+
+func TestInvalidAnalyzerSettings(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.CPULimitRatio = .5 },
+		func(c *Config) { c.MinimumHistoryHours = -1 },
+		func(c *Config) { c.CPUMinValue = 0 },
+		func(c *Config) { c.MemoryMinValue = 2 * 1024 * 1024 },
+		func(c *Config) { c.PointsRequired = 1 },
+		func(c *Config) { c.ReleaseHistory = 0 },
+		func(c *Config) { c.MemoryBufferPercent = math.NaN() },
+		func(c *Config) { c.HistoryDuration = math.Inf(1) },
+	} {
+		cfg := Default("simple_limit")
+		mutate(cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid policy accepted: %+v", cfg)
+		}
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+
+	"github.com/kedify/recommender/analysis"
 )
 
 type ResourceType string
@@ -53,8 +55,45 @@ func EmptyAllocations() Allocations {
 }
 
 type Pod struct {
-	Name    string `json:"name" yaml:"name"`
-	Deleted bool   `json:"deleted" yaml:"deleted"`
+	Name               string      `json:"name" yaml:"name"`
+	Deleted            bool        `json:"deleted" yaml:"deleted"`
+	UID                string      `json:"-" yaml:"-"`
+	Release            string      `json:"-" yaml:"-"`
+	CreatedAt          int64       `json:"-" yaml:"-"`
+	ContainerStartedAt int64       `json:"-" yaml:"-"`
+	ContainerID        string      `json:"-" yaml:"-"`
+	EndedAt            int64       `json:"-" yaml:"-"`
+	Image              string      `json:"-" yaml:"-"`
+	Allocations        Allocations `json:"-" yaml:"-"`
+}
+
+// Release describes a ReplicaSet or controller revision, newest first in reports.
+// Workload ownership is scoped by cluster, namespace, kind and name, not UID.
+type Release struct {
+	ID        string `json:"id" yaml:"id"`
+	Name      string `json:"name" yaml:"name"`
+	Image     string `json:"image,omitempty" yaml:"image,omitempty"`
+	CreatedAt int64  `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
+	Revision  int64  `json:"revision,omitempty" yaml:"revision,omitempty"`
+	Current   bool   `json:"current" yaml:"current"`
+}
+
+// ReleaseUsage is descriptive evidence, not a recommendation for an old image.
+// CPU values are millicores; memory values are bytes (the analyzer's native units).
+type ReleaseUsage struct {
+	AggregatedUsage analysis.Signal `json:"aggregatedUsage" yaml:"aggregatedUsage"`
+	ObservedStart   int64           `json:"observedStart" yaml:"observedStart"`
+	ObservedEnd     int64           `json:"observedEnd" yaml:"observedEnd"`
+	HistoryHours    float64         `json:"historyHours" yaml:"historyHours"`
+	Coverage        float64         `json:"coverage" yaml:"coverage"`
+	SampleCount     int             `json:"sampleCount" yaml:"sampleCount"`
+	OOMKills        int             `json:"oomKills,omitempty" yaml:"oomKills,omitempty"`
+}
+
+type ReleaseComparison struct {
+	Release Release      `json:"release" yaml:"release"`
+	CPU     ReleaseUsage `json:"cpu" yaml:"cpu"`
+	Memory  ReleaseUsage `json:"memory" yaml:"memory"`
 }
 
 type HPA struct {
@@ -78,11 +117,24 @@ type Object struct {
 	Warnings    []string          `json:"warnings" yaml:"warnings"`
 	Labels      map[string]string `json:"labels" yaml:"labels"`
 	Annotations map[string]string `json:"annotations" yaml:"annotations"`
+	Releases    []Release         `json:"releases,omitempty" yaml:"releases,omitempty"`
 
-	Selector     string   `json:"-" yaml:"-"`
-	UID          string   `json:"-" yaml:"-"`
-	GroupedJobs  []string `json:"-" yaml:"-"`
-	GroupingExpr string   `json:"-" yaml:"-"`
+	Selector             string             `json:"-" yaml:"-"`
+	UID                  string             `json:"-" yaml:"-"`
+	GroupedJobs          []string           `json:"-" yaml:"-"`
+	GroupingExpr         string             `json:"-" yaml:"-"`
+	Release              string             `json:"-" yaml:"-"`
+	ObservedAt           int64              `json:"-" yaml:"-"`
+	ReleaseStartedAt     int64              `json:"-" yaml:"-"`
+	ReleaseStartInferred bool               `json:"-" yaml:"-"`
+	IdentityAmbiguous    bool               `json:"-" yaml:"-"`
+	InventoryAvailable   bool               `json:"-" yaml:"-"`
+	ExcludedPods         int                `json:"-" yaml:"-"`
+	Generation           int64              `json:"-" yaml:"-"`
+	ObservedGeneration   int64              `json:"-" yaml:"-"`
+	TemplateHash         string             `json:"-" yaml:"-"`
+	Image                string             `json:"-" yaml:"-"`
+	OOMKills             []analysis.OOMKill `json:"-" yaml:"-"`
 }
 
 func (o Object) CurrentPods() int {
@@ -119,9 +171,12 @@ type Recommendation struct {
 }
 
 type Scan struct {
-	Object      Object         `json:"object" yaml:"object"`
-	Recommended Recommendation `json:"recommended" yaml:"recommended"`
-	Severity    Severity       `json:"severity" yaml:"severity"`
+	Object              Object                  `json:"object" yaml:"object"`
+	Recommended         Recommendation          `json:"recommended" yaml:"recommended"`
+	Severity            Severity                `json:"severity" yaml:"severity"`
+	Analysis            *analysis.Output        `json:"analysis,omitempty" yaml:"analysis,omitempty"`
+	ReleaseComparisons  []ReleaseComparison     `json:"releaseComparisons,omitempty" yaml:"releaseComparisons,omitempty"`
+	SuppressedResources map[ResourceType]string `json:"suppressedResources,omitempty" yaml:"suppressedResources,omitempty"`
 }
 
 type StrategyData struct {

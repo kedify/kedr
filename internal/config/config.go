@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kedify/recommender/analysis"
 )
 
 type Secret string
@@ -96,7 +99,10 @@ type Config struct {
 	TimeframeDuration    float64  `json:"-" yaml:"-"`
 	CPUPercentile        float64  `json:"-" yaml:"-"`
 	CPURequest           float64  `json:"-" yaml:"-"`
-	CPULimit             float64  `json:"-" yaml:"-"`
+	CPULimitRatio        float64  `json:"-" yaml:"-"`
+	MinimumHistoryHours  float64  `json:"-" yaml:"-"`
+	ReleaseHistory       int      `json:"-" yaml:"-"`
+	DetectMemoryLeaks    bool     `json:"-" yaml:"-"`
 	MemoryBufferPercent  float64  `json:"-" yaml:"-"`
 	PointsRequired       int      `json:"-" yaml:"-"`
 	AllowHPA             bool     `json:"-" yaml:"-"`
@@ -153,7 +159,9 @@ func Default(strategy string) *Config {
 		TimeframeDuration:      1.25,
 		CPUPercentile:          95,
 		CPURequest:             66,
-		CPULimit:               96,
+		CPULimitRatio:          5,
+		MinimumHistoryHours:    168,
+		ReleaseHistory:         3,
 		MemoryBufferPercent:    15,
 		PointsRequired:         100,
 		OOMMemoryBuffer:        25,
@@ -166,8 +174,8 @@ var supportedResources = map[string]string{
 }
 
 func (c *Config) Validate() error {
-	if c.CPUMinValue < 0 || c.MemoryMinValue < 0 {
-		return errors.New("resource minimums cannot be negative")
+	if c.CPUMinValue <= 0 || c.MemoryMinValue <= 0 {
+		return errors.New("resource minimums must be positive")
 	}
 	if c.MaxWorkers < 1 || c.DiscoveryJobBatchSize < 1 || c.DiscoveryJobMaxBatches < 1 || c.JobGroupingLimit < 1 {
 		return errors.New("worker and discovery limits must be positive")
@@ -236,17 +244,25 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	if c.HistoryDuration < 1 || c.TimeframeDuration <= 0 || c.PointsRequired < 1 {
+	for _, value := range []float64{c.HistoryDuration, c.TimeframeDuration, c.MinimumHistoryHours, c.CPUPercentile, c.CPURequest, c.CPULimitRatio, c.MemoryBufferPercent, c.OOMMemoryBuffer} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return errors.New("strategy numbers must be finite")
+		}
+	}
+	if c.HistoryDuration < 1 || c.HistoryDuration > float64(math.MaxInt64/int64(time.Hour)) || c.TimeframeDuration < 1.0/60 || c.TimeframeDuration > c.HistoryDuration*60 || c.MinimumHistoryHours < 1.0/3600 || c.MinimumHistoryHours > float64(math.MaxInt64/int64(time.Hour)) || c.PointsRequired < 2 {
 		return errors.New("invalid strategy duration or point count")
 	}
 	if c.MemoryBufferPercent <= 0 || c.OOMMemoryBuffer < 0 {
 		return errors.New("invalid memory buffer percentage")
 	}
+	if c.ReleaseHistory < 1 {
+		return errors.New("--release-history must be at least 1")
+	}
 	if c.Strategy == "simple" && (c.CPUPercentile <= 0 || c.CPUPercentile > 100) {
 		return errors.New("--cpu-percentile must be in (0,100]")
 	}
-	if c.Strategy == "simple_limit" && (c.CPURequest <= 0 || c.CPURequest > 100 || c.CPULimit <= 0 || c.CPULimit > 100) {
-		return errors.New("--cpu-request and --cpu-limit must be in (0,100]")
+	if c.Strategy == "simple_limit" && (c.CPURequest <= 0 || c.CPURequest > 100 || c.CPULimitRatio < 1) {
+		return errors.New("--cpu-request must be in (0,100] and --cpu-limit-ratio must be at least 1")
 	}
 	if c.EKSManagedProm && c.HistoryDuration*60/c.TimeframeDuration > 11000 {
 		c.TimeframeDuration = c.HistoryDuration * 60 / 10000
@@ -256,13 +272,43 @@ func (c *Config) Validate() error {
 		"memory_buffer_percentage": c.MemoryBufferPercent, "points_required": c.PointsRequired,
 		"allow_hpa": c.AllowHPA, "use_oomkill_data": c.UseOOMKillData,
 		"oom_memory_buffer_percentage": c.OOMMemoryBuffer,
+		"minimum_history_hours":        c.MinimumHistoryHours, "detect_memory_leaks": c.DetectMemoryLeaks,
+		"release_history": c.ReleaseHistory,
 	}
 	if c.Strategy == "simple" {
 		c.OtherArgs["cpu_percentile"] = c.CPUPercentile
 	} else {
-		c.OtherArgs["cpu_request"], c.OtherArgs["cpu_limit"] = c.CPURequest, c.CPULimit
+		c.OtherArgs["cpu_request"], c.OtherArgs["cpu_limit_ratio"] = c.CPURequest, c.CPULimitRatio
 	}
-	return nil
+	_, err := c.AnalysisPolicy()
+	return err
+}
+
+// AnalysisPolicy maps supported CLI knobs to the shared engine. Data-quality,
+// material-change and upper-bound defaults remain those of the module.
+func (c *Config) AnalysisPolicy() (analysis.Policy, error) {
+	p := analysis.DefaultPolicy()
+	p.CPU.HeadroomCoefficient = 1
+	p.CPU.Percentile = c.CPUPercentile
+	p.CPU.RequestsOnly = c.Strategy == "simple"
+	if c.Strategy == "simple_limit" {
+		p.CPU.Percentile = c.CPURequest
+		p.CPU.LimitsToRequestsRatio = c.CPULimitRatio
+	}
+	if p.CPU.Percentile == 100 {
+		p.CPU.Strategy = analysis.CPUStrategyMax
+	}
+	p.CPU.Bounds.Minimum = float64(c.CPUMinValue)
+	p.Memory.Bounds.Minimum = float64(c.MemoryMinValue) * 1024 * 1024
+	p.Memory.HeadroomCoefficient = 1 + c.MemoryBufferPercent/100
+	p.Memory.OOMKilledCoefficient = 1 + c.OOMMemoryBuffer/100
+	p.Memory.LimitsToRequestsRatio = 1
+	p.Evidence.MinimumSamples = c.PointsRequired
+	p.Evidence.MinimumHistorySeconds = int64(c.MinimumHistoryHours * 3600)
+	if c.DetectMemoryLeaks {
+		p.Memory.LeakDetection = &analysis.MemoryLeakPolicy{}
+	}
+	return analysis.NormalizePolicy(p)
 }
 
 func contains(values []string, wanted string) bool {

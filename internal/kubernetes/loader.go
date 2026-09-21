@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
@@ -335,24 +336,59 @@ func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector
 		objectAnnotations = map[string]string{}
 	}
 	for _, container := range containers {
-		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID)})
+		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Image: container.Image, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID), Generation: meta.Generation, ObservedAt: time.Now().UnixMilli()})
 	}
 	return out
 }
 func (l *Loader) fromDeployment(c *string, x *appsv1.Deployment, h map[hpaKey]*model.HPA) []model.Object {
-	return l.objects(c, x.ObjectMeta, "Deployment", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	out := l.objects(c, x.ObjectMeta, "Deployment", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	for i := range out {
+		out[i].ObservedGeneration = x.Status.ObservedGeneration
+		// Completion is a conservative activation boundary, including rollbacks
+		// that reuse an old ReplicaSet. Pod replacement does not move it forward.
+		for _, condition := range x.Status.Conditions {
+			if condition.Type == appsv1.DeploymentProgressing && condition.Reason == "NewReplicaSetAvailable" && condition.Status == corev1.ConditionTrue && !condition.LastUpdateTime.IsZero() {
+				out[i].ReleaseStartedAt = condition.LastUpdateTime.UnixMilli()
+				out[i].ReleaseStartInferred = true
+			}
+		}
+	}
+	return out
 }
 func (l *Loader) fromStatefulSet(c *string, x *appsv1.StatefulSet, h map[hpaKey]*model.HPA) []model.Object {
-	return l.objects(c, x.ObjectMeta, "StatefulSet", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	out := l.objects(c, x.ObjectMeta, "StatefulSet", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	for i := range out {
+		out[i].ObservedGeneration = x.Status.ObservedGeneration
+		if x.Status.UpdateRevision != "" {
+			out[i].Release = "controller-revision-hash:" + x.Status.UpdateRevision
+		}
+	}
+	return out
 }
 func (l *Loader) fromDaemonSet(c *string, x *appsv1.DaemonSet, h map[hpaKey]*model.HPA) []model.Object {
-	return l.objects(c, x.ObjectMeta, "DaemonSet", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	out := l.objects(c, x.ObjectMeta, "DaemonSet", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	for i := range out {
+		out[i].ObservedGeneration = x.Status.ObservedGeneration
+		out[i].IdentityAmbiguous = x.Status.UpdatedNumberScheduled < x.Status.DesiredNumberScheduled
+	}
+	return out
 }
 func (l *Loader) fromJob(c *string, x *batchv1.Job, kind string, h map[hpaKey]*model.HPA) []model.Object {
-	return l.objects(c, x.ObjectMeta, kind, selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	out := l.objects(c, x.ObjectMeta, kind, selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
+	for i := range out {
+		out[i].Release = "template:" + templateHash(x.Spec.Template)
+		out[i].ObservedGeneration = x.Generation
+	}
+	return out
 }
 func (l *Loader) fromCronJob(c *string, x *batchv1.CronJob, h map[hpaKey]*model.HPA) []model.Object {
-	return l.objects(c, x.ObjectMeta, "CronJob", selectorString(x.Spec.JobTemplate.Spec.Selector), x.Spec.JobTemplate.Spec.Template.Spec.Containers, h)
+	out := l.objects(c, x.ObjectMeta, "CronJob", "", x.Spec.JobTemplate.Spec.Template.Spec.Containers, h)
+	for i := range out {
+		out[i].TemplateHash = templateHash(x.Spec.JobTemplate.Spec.Template)
+		out[i].Release = "template:" + out[i].TemplateHash
+		out[i].ObservedGeneration = x.Generation
+	}
+	return out
 }
 
 func (l *Loader) jobs(ctx context.Context, client kubernetes.Interface, namespace string) ([]batchv1.Job, error) {
@@ -436,6 +472,9 @@ func (l *Loader) groupJobs(cluster *string, jobs []batchv1.Job, h map[hpaKey]*mo
 		for i := range objects {
 			objects[i].GroupedJobs = names
 			objects[i].GroupingExpr = labels.Set{g.label: g.value}.String()
+			// A name-based group of different Job UIDs is not a workload identity.
+			objects[i].UID, objects[i].Release = "", ""
+			objects[i].Warnings = append(objects[i].Warnings, "GroupedJobIdentityUnsupported")
 		}
 		out = append(out, objects...)
 	}
@@ -492,7 +531,18 @@ func (l *Loader) rollouts(ctx context.Context, clients Clients, namespace string
 			Name: item.GetName(), Namespace: item.GetNamespace(), UID: item.GetUID(),
 			Labels: item.GetLabels(), Annotations: item.GetAnnotations(),
 		}
-		out = append(out, l.objects(clients.Name, meta, "Rollout", selector, containers, h)...)
+		meta.Generation = item.GetGeneration()
+		objects := l.objects(clients.Name, meta, "Rollout", selector, containers, h)
+		status, _ := raw["status"].(map[string]any)
+		for i := range objects {
+			if hash, ok := status["currentPodHash"].(string); ok && hash != "" {
+				objects[i].Release = "rollouts-pod-template-hash:" + hash
+			}
+			if generation, ok := status["observedGeneration"].(int64); ok {
+				objects[i].ObservedGeneration = generation
+			}
+		}
+		out = append(out, objects...)
 	}
 	return out, nil
 }

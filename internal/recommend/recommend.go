@@ -4,18 +4,16 @@ package recommend
 import (
 	"math"
 
-	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/kedr/internal/strategy"
 )
 
-func Scan(cfg *config.Config, object model.Object, raw strategy.Result) model.Scan {
+func Scan(object model.Object, raw strategy.Result) model.Scan {
 	recommendation := model.Recommendation{Requests: map[model.ResourceType]model.RecommendationValue{}, Limits: map[model.ResourceType]model.RecommendationValue{}, Info: map[model.ResourceType]*string{}}
 	severities := make([]model.Severity, 0, 4)
 	for _, resource := range model.ResourceTypes {
-		value := raw[resource]
-		request := round(cfg, resource, value.Request)
-		limit := round(cfg, resource, value.Limit)
+		value := raw.Resources[resource]
+		request, limit := value.Request, value.Limit
 		rqSeverity := severity(object.Allocations.Requests[resource], request, resource)
 		limitSeverity := severity(object.Allocations.Limits[resource], limit, resource)
 		recommendation.Requests[resource] = model.RecommendationValue{Value: request, Severity: rqSeverity}
@@ -23,22 +21,7 @@ func Scan(cfg *config.Config, object model.Object, raw strategy.Result) model.Sc
 		recommendation.Info[resource] = value.Info
 		severities = append(severities, rqSeverity, limitSeverity)
 	}
-	return model.Scan{Object: object, Recommended: recommendation, Severity: model.WorstSeverity(severities...)}
-}
-
-func round(cfg *config.Config, resource model.ResourceType, value model.MaybeValue) model.MaybeValue {
-	if !value.Set || value.Unknown || math.IsNaN(value.Value) {
-		return value
-	}
-	if resource == model.CPU {
-		value.Value = math.Ceil(value.Value*1000) / 1000
-		value.Value = math.Max(value.Value, float64(cfg.CPUMinValue)/1000)
-	} else {
-		const mi = 1024 * 1024
-		value.Value = math.Ceil(value.Value/mi) * mi
-		value.Value = math.Max(value.Value, float64(cfg.MemoryMinValue)*mi)
-	}
-	return value
+	return model.Scan{Object: object, Recommended: recommendation, Severity: model.WorstSeverity(severities...), Analysis: raw.Analysis, ReleaseComparisons: raw.ReleaseComparisons, SuppressedResources: raw.SuppressedResources}
 }
 
 func severity(current, recommended model.MaybeValue, resource model.ResourceType) model.Severity {
