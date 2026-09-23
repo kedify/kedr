@@ -251,10 +251,19 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 	for _, info := range releases {
 		object.Releases = append(object.Releases, info)
 	}
+	// API rollout revisions preserve activation order across rollbacks. When
+	// historical KSM-only releases lack revisions, fall back to creation time.
+	haveRevisions := true
+	for _, release := range object.Releases {
+		haveRevisions = haveRevisions && release.Revision > 0
+	}
 	sort.Slice(object.Releases, func(i, j int) bool {
 		a, b := object.Releases[i], object.Releases[j]
 		if a.Current != b.Current {
 			return a.Current
+		}
+		if haveRevisions && a.Revision != b.Revision {
+			return a.Revision > b.Revision
 		}
 		if a.CreatedAt != b.CreatedAt {
 			return a.CreatedAt > b.CreatedAt
@@ -264,7 +273,7 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 		}
 		return a.ID < b.ID
 	})
-	object.Releases = object.Releases[:min(max(1, c.cfg.ReleaseHistory), len(object.Releases))]
+	object.Releases = object.Releases[:min(max(1, c.cfg.ReleaseHistory), 4, len(object.Releases))]
 	selected := map[string]bool{}
 	for _, release := range object.Releases {
 		selected[release.ID] = true

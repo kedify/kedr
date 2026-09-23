@@ -2,6 +2,7 @@
 package prometheus
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -124,9 +125,41 @@ type apiResponse struct {
 }
 
 type series struct {
-	Metric map[string]string   `json:"metric"`
-	Value  []json.RawMessage   `json:"value"`
-	Values [][]json.RawMessage `json:"values"`
+	Metric map[string]string `json:"metric"`
+	Value  []json.RawMessage `json:"value"`
+	Values []samplePair      `json:"values"`
+}
+
+// Decode matrix samples directly into numbers. Keeping two RawMessages per
+// sample and unmarshaling them again creates millions of tiny allocations for
+// a typical history scan. Scalar results still use parsePair below.
+type samplePair struct{ Time, Value float64 }
+
+func (p *samplePair) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) < 2 || data[0] != '[' || data[len(data)-1] != ']' {
+		return errors.New("invalid Prometheus sample")
+	}
+	timestamp, value, ok := bytes.Cut(data[1:len(data)-1], []byte{','})
+	value = bytes.TrimSpace(value)
+	if !ok || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return errors.New("invalid Prometheus sample")
+	}
+	var err error
+	p.Time, err = strconv.ParseFloat(string(bytes.TrimSpace(timestamp)), 64)
+	if err != nil {
+		return err
+	}
+	if bytes.ContainsRune(value, '\\') {
+		var decoded string
+		if err = json.Unmarshal(value, &decoded); err != nil {
+			return err
+		}
+		p.Value, err = strconv.ParseFloat(decoded, 64)
+	} else {
+		p.Value, err = strconv.ParseFloat(string(value[1:len(value)-1]), 64)
+	}
+	return err
 }
 
 func (c *Client) do(ctx context.Context, path string, params url.Values) ([]series, error) {

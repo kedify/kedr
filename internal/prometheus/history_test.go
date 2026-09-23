@@ -47,8 +47,8 @@ func historyClient(t *testing.T, cfg *config.Config, data map[string][]series) *
 func TestHistoricalOwnershipIncludesDeletedPodsAndReplicaSets(t *testing.T) {
 	now := time.Now().UTC()
 	data := map[string][]series{}
-	for i, name := range []string{"ancient", "older", "previous", "current"} {
-		created := now.Add(-time.Duration(14-i*3) * 24 * time.Hour)
+	for i, name := range []string{"ancient", "third", "older", "previous", "current"} {
+		created := now.Add(-time.Duration(14-i*2) * 24 * time.Hour)
 		data["kube_replicaset_owner"] = append(data["kube_replicaset_owner"], metadata(map[string]string{"namespace": "ns", "replicaset": name, "owner_kind": "Deployment", "owner_name": "app"}, 1))
 		data["kube_replicaset_created"] = append(data["kube_replicaset_created"], metadata(map[string]string{"replicaset": name}, float64(created.Unix())))
 		labels := map[string]string{"pod": name + "-deleted", "uid": name + "-uid", "owner_name": name}
@@ -63,10 +63,10 @@ func TestHistoricalOwnershipIncludesDeletedPodsAndReplicaSets(t *testing.T) {
 		Releases: []model.Release{{ID: "hash:current", Name: "current", Revision: 4}},
 	}
 	got := historyClient(t, config.Default("simple"), data).HistoricalPods(context.Background(), object)
-	if len(got.Warnings) != 0 || got.CurrentPods() != 1 || got.DeletedPods() != 3 || len(got.Releases) != 3 {
+	if len(got.Warnings) != 0 || got.CurrentPods() != 1 || got.DeletedPods() != 4 || len(got.Releases) != 4 {
 		t.Fatalf("historical membership lost/duplicated: %+v", got)
 	}
-	if !got.Releases[0].Current || got.Releases[0].ID != object.Release || got.Releases[1].Name != "previous" || got.Releases[2].Name != "older" {
+	if !got.Releases[0].Current || got.Releases[0].ID != object.Release || got.Releases[1].Name != "previous" || got.Releases[2].Name != "older" || got.Releases[3].Name != "third" {
 		t.Fatalf("incorrect release order: %+v", got.Releases)
 	}
 	for _, pod := range got.Pods {

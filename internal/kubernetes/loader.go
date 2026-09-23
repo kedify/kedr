@@ -17,6 +17,7 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -602,13 +603,23 @@ func pods(items []corev1.Pod) []model.Pod {
 
 func DiscoverMetricsURL(ctx context.Context, clients Clients) (string, error) {
 	selectors := []string{"app.kubernetes.io/name=vmsingle", "app.kubernetes.io/name=victoria-metrics-single", "app.kubernetes.io/name=vmselect", "app.kubernetes.io/component=vmselect", "app=vmselect", "app.kubernetes.io/component=query,app.kubernetes.io/name=thanos", "app.kubernetes.io/name=thanos-query", "app=thanos-query", "app=thanos-querier", "app.kubernetes.io/name=mimir,app.kubernetes.io/component=query-frontend", "app=kube-prometheus-stack-prometheus", "app=prometheus,component=server", "app=prometheus-server", "app=prometheus-operator-prometheus", "app=rancher-monitoring-prometheus", "app=prometheus-prometheus", "app.kubernetes.io/name=prometheus,app.kubernetes.io/component=server", "app=stack-prometheus"}
+	// Fetch each inventory once and evaluate selector priority locally. Repeating
+	// LIST for every selector adds dozens of API round trips before a scan starts.
+	services, err := clients.Typed.CoreV1().Services(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("discover metrics services: %w", err)
+	}
+	var ingresses *networkingv1.IngressList
+	ingressesLoaded := false
 	for _, selector := range selectors {
-		items, err := clients.Typed.CoreV1().Services(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		matcher, err := labels.Parse(selector)
 		if err != nil {
-			continue
+			return "", err
 		}
-		if len(items.Items) > 0 && len(items.Items[0].Spec.Ports) > 0 {
-			svc := items.Items[0]
+		for _, svc := range services.Items {
+			if !matcher.Matches(labels.Set(svc.Labels)) || len(svc.Spec.Ports) == 0 {
+				continue
+			}
 			url := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, svc.Spec.Ports[0].Port)
 			if clients.Name != nil {
 				url = fmt.Sprintf("%s/api/v1/namespaces/%s/services/%s:%d/proxy", strings.TrimRight(clients.REST.Host, "/"), svc.Namespace, svc.Name, svc.Spec.Ports[0].Port)
@@ -622,9 +633,18 @@ func DiscoverMetricsURL(ctx context.Context, clients Clients) (string, error) {
 			return url, nil
 		}
 		if clients.Name != nil {
-			ingresses, ingressErr := clients.Typed.NetworkingV1().Ingresses(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: selector})
-			if ingressErr == nil && len(ingresses.Items) > 0 && len(ingresses.Items[0].Spec.Rules) > 0 {
-				host := ingresses.Items[0].Spec.Rules[0].Host
+			if !ingressesLoaded {
+				ingresses, _ = clients.Typed.NetworkingV1().Ingresses(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+				ingressesLoaded = true
+			}
+			if ingresses == nil {
+				continue
+			}
+			for _, ingress := range ingresses.Items {
+				if !matcher.Matches(labels.Set(ingress.Labels)) || len(ingress.Spec.Rules) == 0 {
+					continue
+				}
+				host := ingress.Spec.Rules[0].Host
 				if host != "" {
 					url := "http://" + host
 					if strings.Contains(selector, "mimir") {

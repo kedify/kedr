@@ -17,7 +17,7 @@ go build -o bin/kedr ./cmd/kedr
 ```
 
 This checkout uses a local `replace github.com/kedify/recommender => ../recommender`
-to include the unreleased OOM/leak extensions. Before publishing a standalone
+to include the unreleased OOM/leak and decision-trace extensions. Before publishing a standalone
 release, publish and pin a recommender version containing those changes and remove
 the replacement. `go install ...@version` is not supported for this development
 checkout's module configuration.
@@ -30,6 +30,62 @@ krr simple --namespace default --formatter json --logtostderr
 ```
 
 Use `kedr simple --help` or `kedr simple_limit --help` for the complete option reference.
+
+Table output includes a saved-run reference and an `explain` hint. Add `--explain`
+to include the diff legend, workload diagnostics, rollout comparisons, and score.
+With `--verbose`, the calculating indicator becomes a single
+`Calculating recommendations` log line so it does not interrupt the logs.
+
+## Explain a recommendation
+
+```sh
+kedr simple
+kedr explain 1                          # Explain row 1 of the latest saved scan
+kedr explain 1 --offline                # Saved decision, without metric queries
+kedr explain 1 --format text            # Full terminal walkthrough, no network
+kedr explain 1 --output ./explain.html  # Choose the HTML destination
+kedr explain 1 --run <run-id>            # Explain a row from an older saved scan
+```
+
+`explain` prints the selected workload, context, scan timestamp, and all four
+request/limit decisions. By default it also creates a standalone HTML report with
+interactive CPU/memory charts, calculation steps, quality guards, and rollout
+comparisons. Click the terminal file link (or open the printed path) to view it;
+**kedr never launches a browser**. Charts support hover, synchronized time zoom,
+and pod/release/reference-line toggles. No external web assets are required.
+
+Rows retain the displayed order: workload name, cluster, namespace, kind, then
+container. Numbers belong to a particular saved run, not permanently to a workload.
+Each completed scan saves its exact row mapping, allocation states, analyzer policy
+and decision traces, original query window, pod identities/lifetimes, and release
+metadata. Metric samples are **not** stored by scanning. The latest 10 runs live in
+`os.UserCacheDir()/kedr/runs` (`~/Library/Caches/kedr/runs` on macOS;
+`$XDG_CACHE_HOME/kedr/runs` or `~/.cache/kedr/runs` on Linux). Generated explanations
+live alongside their run by default and are removed with it during retention cleanup.
+Use `--output` to preserve a report elsewhere, or `--no-save` on scans to opt out.
+Saved files use private permissions and exclude arbitrary workload annotations,
+authentication headers/tokens, and URLs containing user credentials, query strings,
+or fragments. Run references do not add text to machine-readable scan output.
+
+For HTML charts, kedr reconnects to the saved metrics source/context and requests
+**the original time window and pod identities**. It does not analyze today's
+workload instead. A metric fingerprint indicates whether retrieved observations
+match the saved scan. Changed, expired, or unavailable data never changes the
+original recommendation; missing charts show an explanation and the saved rationale
+remains readable. Rollout history is limited to releases retained by the original
+scan, including potentially different CPU and memory fallback sources.
+
+Credentials are resolved again at explanation time. Existing connection flags are
+supported, for example `--kubeconfig`, `--prometheus-url`,
+`--prometheus-auth-header`, `--prometheus-headers`, and AWS authentication flags.
+Supply secret headers again if the source requires them. An explicit replacement
+endpoint does not inherit the original Kubernetes bearer token. A changed or missing
+saved Kubernetes context produces a chart diagnostic rather than silently using the
+current context. `--offline` and `--format text` need no credentials.
+
+The report explains the strategy's actual behavior, including retained limits,
+material-change thresholds, HPA suppression, insufficient evidence, OOM adjustments,
+and bounds. `simple` retains CPU limits; `explain` does not introduce limit removal.
 
 ## Strategies
 
@@ -50,7 +106,8 @@ the module. No extra KRR percentile interpolation, sizing, rounding, or floors r
 after `Analyze`; exact recommendations are retained, with CPU converted from the
 module's millicores to report cores. Display formatting does not change stored values.
 
-The analyzer requires seven days of observed history by default, 90% coverage,
+The analyzer requires one hour of observed history by default, 30 distinct
+observation times, 90% coverage,
 and fresh observations. Missing historical samples reduce measured coverage but
 do not independently block recommendations. `--history-duration`
 controls the query window; it does **not** weaken these guards. Explicitly change
@@ -66,12 +123,30 @@ scoped by cluster, namespace, kind and name; recreating a workload with the same
 name is intentionally treated as the same workload. Pod-level observations remain
 separate for CPU rates, percentiles, and memory-leak detection.
 
-`--release-history N` retains up to N releases (default **3**) within the query
-window. Only the newest/current release drives sizing, OOM adjustments, and leak
-findings. Previous releases are **comparison only**: their CPU aggregate, memory
-peak, observed history, coverage, and OOM counts are reported separately. There is
-no blending and no fallback to an old image's sizing when a new release lacks
-evidence. A new release must still satisfy `--minimum-history-hours` itself.
+`--release-history N` retains up to N rollouts within the query window, including
+current (default **4**, allowed **1–4**). CPU and memory each try the current
+rollout first. If its usage is missing or has insufficient history or samples,
+the analyzer tries the previous rollout, then the one before it, stopping after
+**three previous rollouts**. Each candidate must independently pass the history,
+sample-count, coverage, and historical freshness checks. Short histories are
+never combined. Set `--release-history 1` to disable historical fallback.
+
+Recommendations still target the current workload/container and use its current
+resource settings and identity. Current HPA, inventory, OOM, and material-change
+guards still apply; missing current pod observations can still block downsizing.
+OOM adjustments and leak findings remain scoped to the current rollout. Unknown
+image-only cohorts cannot supply fallback usage.
+
+Reports identify the selected sizing source for each resource. Raw analysis adds
+`rolloutFallback` with the source rollout, historical evaluation time, and the
+current rollout's failed evidence checks. Historical samples keep their original
+timestamps and are evaluated at the end of their observed segment, capped by the
+current rollout's start. Release comparisons keep their own usage/history, with
+`sizingResources` identifying which supply recommendations. Unselected rollouts
+remain comparison only. The 30-observation default allows a rollout with one hour
+of minute-level scrapes to qualify, including modest gaps within the 90% coverage
+guard. Pod uptime alone does not guarantee enough observed history or coverage.
+An explicit `--points-required 100` still requires 100 distinct observation times.
 
 Deployments use ReplicaSets as release boundaries, including image **and** other
 pod-template changes. Current rollout revision takes precedence over creation
@@ -105,8 +180,9 @@ usage-based fallback and block downsizing. The existing
 `--oom-memory-buffer-percentage` sets `OOMKilledCoefficient` (default 1.25).
 
 `--detect-memory-leaks` enables the module's advisory lower-baseline trend detector.
-It is off by default, does not change sizing, and can report potential growth even
-when the longer sizing-history guard blocks recommendations. A potential leak is
+It is off by default, does not change sizing, and uses its own six-hour minimum history, independent of the one-hour sizing
+default. A customized longer sizing guard can still block sizing while leak
+detection reports potential growth. A potential leak is
 not a diagnosis; useful allocations and growing caches can look similar.
 
 ## Workloads and metrics
@@ -134,8 +210,12 @@ The Prometheus-compatible service should expose:
 
 Usage queries fetch individual CPU counters and memory gauges using instant
 range-vector queries, not precomputed rates/percentiles/maxima or a resampled
-`query_range` grid. Every original scrape timestamp is preserved. Pod batches and
-six-hour time chunks bound query sizes. Replicated scrape sources
+`query_range` grid. Every original scrape timestamp is preserved. Batches contain
+at most 50 distinct pod names. Usage time chunks allow up to 300 pod-hours per
+request (six hours for 50 pods, longer for smaller workloads). Chunks run
+concurrently within the shared `--max-workers` request limit; windows entirely
+outside known pod lifetimes are skipped. Optional OOM queries keep six-hour
+chunks and retain observations of earlier events. Replicated scrape sources
 are selected deterministically, preferring `job="kubelet"`; they are not pooled.
 
 The Kubernetes service account needs access to workload objects, pods,
@@ -197,6 +277,17 @@ make build
 ```
 
 Integration tests use Kubernetes fake clients and local HTTP servers and do not require a cluster. Before a release, test against at least one real cluster with kube-state-metrics and cAdvisor data.
+
+Use `--verbose --logtostderr` to see endpoint discovery, workload discovery, and
+per-container inventory, historical metadata, usage collection, and analysis
+timings. Repeatable collection/decoding benchmarks are available with:
+
+```sh
+go test -run '^$' -bench 'Benchmark(NativeHistoryDecode|HistoryRoundTrips)$' -benchmem ./internal/prometheus
+```
+
+See [performance measurements](docs/performance.md) for the bottlenecks, changes,
+and a read-only cluster benchmark.
 
 ## License and attribution
 

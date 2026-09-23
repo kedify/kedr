@@ -50,14 +50,8 @@ func (c *Client) HistoryRange(ctx context.Context) (time.Time, time.Time, error)
 	if len(rows) == 0 || len(rows[0].Values) == 0 {
 		return time.Time{}, time.Time{}, errors.New("history range unavailable")
 	}
-	first, e1 := parsePair(rows[0].Values[0])
-	last, e2 := parsePair(rows[0].Values[len(rows[0].Values)-1])
-	if e1 != nil {
-		return time.Time{}, time.Time{}, e1
-	}
-	if e2 != nil {
-		return time.Time{}, time.Time{}, e2
-	}
+	first := rows[0].Values[0]
+	last := rows[0].Values[len(rows[0].Values)-1]
 	return time.Unix(int64(first.Time), 0), time.Unix(int64(last.Time), 0), nil
 }
 

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,20 @@ func TestProgressDoesNotEmitTerminalModeEscapes(t *testing.T) {
 	progress.Stop()
 
 	got := output.String()
-	if strings.ContainsRune(got, '\x1b') {
-		t.Fatalf("progress emitted an escape sequence: %q", got)
+	plain := regexp.MustCompile(`\x1b\[[0-9;:]*m`).ReplaceAllString(got, "")
+	if got == plain {
+		t.Fatal("progress title is missing shimmer colors")
 	}
-	if !strings.Contains(got, "Calculating recommendations") {
-		t.Fatalf("progress text missing: %q", got)
+	if strings.ContainsRune(plain, '\x1b') {
+		t.Fatalf("progress emitted a non-color escape sequence: %q", got)
+	}
+	if !strings.Contains(plain, "Calculating recommendations 1/43") {
+		t.Fatalf("progress text or count missing: %q", plain)
+	}
+	if !strings.Contains(plain, "⣾ Calculating recommendations") {
+		t.Fatalf("progress spinner missing: %q", plain)
+	}
+	if !strings.HasSuffix(plain, "\r"+strings.Repeat(" ", 2+len("Calculating recommendations 1/43"))+"\r") {
+		t.Fatalf("progress did not clear its visible width: %q", plain)
 	}
 }

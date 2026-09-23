@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/kedify/kedr/internal/config"
+	"github.com/kedify/kedr/internal/explain"
 	kube "github.com/kedify/kedr/internal/kubernetes"
 	"github.com/kedify/kedr/internal/model"
 	prom "github.com/kedify/kedr/internal/prometheus"
 	"github.com/kedify/kedr/internal/recommend"
 	"github.com/kedify/kedr/internal/report"
+	"github.com/kedify/kedr/internal/runstore"
 	"github.com/kedify/kedr/internal/strategy"
 	"github.com/kedify/recommender/analysis"
 	appsv1 "k8s.io/api/apps/v1"
@@ -116,11 +118,31 @@ func TestDiscoveryMetricsAnalyzerReportIntegration(t *testing.T) {
 		t.Fatalf("diagnostics lost across adapters: %+v", memory)
 	}
 	scan := recommend.Scan(object, result)
+	store := runstore.Store{Root: t.TempDir()}
+	saved, err := store.Save(runstore.Run{Strategy: cfg.Strategy, Rows: []runstore.Row{runstore.NewRow(scan, metrics, runstore.Connection{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explanation := explain.Build(loaded, loaded.Rows[0])
+	reloadedMetrics, reloadedWarnings := client.GatherWindow(context.Background(), loaded.Rows[0].Object(), time.UnixMilli(metrics.WindowStart), time.UnixMilli(metrics.EvaluationTime))
+	explanation.AddMetrics(loaded.Rows[0], reloadedMetrics, reloadedWarnings)
+	if !strings.Contains(explanation.ChartStatus, "Verified") || len(explanation.Cards) != 4 {
+		t.Fatalf("saved explanation failed: %+v", explanation)
+	}
+	if _, err := explain.HTML(explanation); err != nil {
+		t.Fatal(err)
+	}
+
 	if scan.Recommended.Requests[model.CPU].Value.Unknown || scan.Recommended.Requests[model.CPU].Value.Value < .199 || scan.Recommended.Requests[model.CPU].Value.Value > .201 {
 		t.Fatalf("CPU units/rate changed: %+v", scan)
 	}
 	for _, format := range []string{"json", "yaml", "table", "csv", "html"} {
 		cfg.Format = format
+		cfg.Explain = true
 		text, renderErr := report.Render(model.Report{Scans: []model.Scan{scan}}, cfg, false)
 		if renderErr != nil {
 			t.Fatal(renderErr)
@@ -130,5 +152,24 @@ func TestDiscoveryMetricsAnalyzerReportIntegration(t *testing.T) {
 				t.Fatalf("%s report lost %s", format, notice)
 			}
 		}
+	}
+}
+
+func TestSavedRowKeyIncludesAllIdentityComponents(t *testing.T) {
+	a, b := "cluster-a", "cluster-b"
+	objects := []model.Object{
+		{Name: "same", Namespace: "a", Kind: "Deployment", Container: "main", Cluster: &a},
+		{Name: "same", Namespace: "b", Kind: "Deployment", Container: "main", Cluster: &a},
+		{Name: "same", Namespace: "a", Kind: "Deployment", Container: "sidecar", Cluster: &a},
+		{Name: "same", Namespace: "a", Kind: "StatefulSet", Container: "main", Cluster: &a},
+		{Name: "same", Namespace: "a", Kind: "Deployment", Container: "main", Cluster: &b},
+	}
+	keys := map[string]bool{}
+	for _, o := range objects {
+		key := rowKey(o)
+		if keys[key] {
+			t.Fatalf("identity collision: %+v", o)
+		}
+		keys[key] = true
 	}
 }

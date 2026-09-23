@@ -79,6 +79,43 @@ func TestSharedAnalyzerParity(t *testing.T) {
 	}
 }
 
+func TestOneHourOfMinuteScrapesAndExplicitSampleMinimum(t *testing.T) {
+	for _, name := range []string{"simple", "simple_limit"} {
+		t.Run(name, func(t *testing.T) {
+			_, metrics, object := fixture(1)
+			cfg := config.Default(name)
+			object.Allocations = model.EmptyAllocations()
+			object.Pods[0].Allocations = object.Allocations
+			object.Releases = []model.Release{{ID: object.Release, Name: "current", Current: true}}
+			got := run(t, cfg, metrics, object)
+			for _, kind := range model.ResourceTypes {
+				r := got.Resources[kind]
+				if r.Request.Unknown || r.Request.Value <= 0 || r.Limit.Unknown {
+					t.Fatalf("one hour of minute scrapes should size unset resources: %+v", r)
+				}
+			}
+			if len(got.ReleaseComparisons[0].SizingResources) != 2 {
+				t.Fatal("eligible current rollout missing sizing attribution")
+			}
+			cfg.PointsRequired = 100
+			got = run(t, cfg, metrics, object)
+			for _, kind := range model.ResourceTypes {
+				r := got.Resources[kind]
+				want := "insufficient-samples (observed 61; required 100)"
+				if kind == model.CPU {
+					want = "insufficient-samples (observed 60; required 100)"
+				}
+				if !r.Request.Unknown || !r.Limit.Unknown || r.Info == nil || !strings.Contains(*r.Info, want) {
+					t.Fatalf("explicit sample minimum not honored or explained: %+v", r)
+				}
+			}
+			if len(got.ReleaseComparisons[0].SizingResources) != 0 {
+				t.Fatal("ineligible rollout labeled as a sizing source")
+			}
+		})
+	}
+}
+
 func TestNearestRankPerSeriesNotPooledOrInterpolated(t *testing.T) {
 	cfg, metrics, object := fixture(4)
 	cfg.Strategy, cfg.CPURequest, cfg.CPULimitRatio = "simple_limit", 66, 2

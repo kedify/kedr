@@ -49,7 +49,9 @@ func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			text, err := Render(report, config.Default("simple"), false)
+			cfg := config.Default("simple")
+			cfg.Explain = true
+			text, err := Render(report, cfg, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +66,6 @@ func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
 			if err != nil || string(after) != string(before) {
 				t.Fatal("table formatting changed underlying recommendation data")
 			}
-			cfg := config.Default("simple")
 			cfg.Format = "csv-raw"
 			raw, err := Render(report, cfg, false)
 			if err != nil || !strings.Contains(raw, "1.23456789") {
@@ -100,7 +101,9 @@ func TestTableMemoryAndReleaseEvidencePrecision(t *testing.T) {
 		CPU:     model.ReleaseUsage{AggregatedUsage: analysis.Signal{Available: true, Value: 1234.56789}},
 		Memory:  model.ReleaseUsage{AggregatedUsage: analysis.Signal{Available: true, Value: 183.0880859375 * 1024 * 1024}},
 	}}
-	text, err := Render(report, config.Default("simple"), false)
+	cfg := config.Default("simple")
+	cfg.Explain = true
+	text, err := Render(report, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,10 +171,13 @@ func TestAllFormats(t *testing.T) {
 		if err != nil || got == "" {
 			t.Fatalf("%s: %q %v", format, got, err)
 		}
+		if format == "table" && !strings.HasSuffix(got, "╯") {
+			t.Fatalf("default table output has trailing text: %s", got)
+		}
 	}
 }
 
-func TestDiagnosticsVisibleInEveryFormat(t *testing.T) {
+func TestDiagnosticsVisibility(t *testing.T) {
 	report := fixture()
 	notice := "oom-kill-detected; potential-memory-leak"
 	report.Scans[0].Recommended.Info[model.Memory] = &notice
@@ -179,13 +185,16 @@ func TestDiagnosticsVisibleInEveryFormat(t *testing.T) {
 	for _, format := range []string{"table", "json", "yaml", "pprint", "csv", "csv-raw", "html"} {
 		cfg := config.Default("simple")
 		cfg.Format = format
-		text, err := Render(report, cfg, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, message := range []string{"oom-kill-detected", "potential-memory-leak", "HistoricalOwnershipUnavailable:kube_pod_owner"} {
-			if !strings.Contains(text, message) {
-				t.Fatalf("%s hides %s", format, message)
+		for _, explain := range []bool{false, true} {
+			cfg.Explain = explain
+			text, err := Render(report, cfg, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, message := range []string{"oom-kill-detected", "potential-memory-leak", "HistoricalOwnershipUnavailable:kube_pod_owner"} {
+				if strings.Contains(text, message) != (format != "table" || explain) {
+					t.Fatalf("%s (explain=%t) has incorrect visibility for %s", format, explain, message)
+				}
 			}
 		}
 	}
@@ -200,6 +209,7 @@ func TestReleaseComparisonsAreLabeledAndPreserved(t *testing.T) {
 	for _, format := range []string{"table", "csv", "csv-raw", "html", "json", "yaml", "pprint"} {
 		cfg := config.Default("simple")
 		cfg.Format = format
+		cfg.Explain = true
 		text, err := Render(report, cfg, false)
 		if err != nil {
 			t.Fatal(err)
@@ -216,5 +226,42 @@ func TestReleaseComparisonsAreLabeledAndPreserved(t *testing.T) {
 		} else if !strings.Contains(text, "releaseComparisons") {
 			t.Fatalf("%s lost comparison evidence", format)
 		}
+	}
+}
+
+func TestFallbackSizingSourceIsVisibleInReports(t *testing.T) {
+	r := fixture()
+	r.Scans[0].ReleaseComparisons = []model.ReleaseComparison{
+		{Release: model.Release{ID: "current", Name: "app-current", Current: true}},
+		{Release: model.Release{ID: "previous", Name: "app-previous"}, SizingResources: []model.ResourceType{model.Memory}},
+	}
+	r.Scans[0].Analysis = &analysis.Output{Results: []analysis.ResourceAnalysis{{Resource: analysis.ResourceMemory, RolloutFallback: &analysis.RolloutFallback{Release: "previous"}}}}
+	for _, format := range []string{"table", "csv", "csv-raw", "html", "json", "yaml", "pprint"} {
+		cfg := config.Default("simple")
+		cfg.Format = format
+		cfg.Explain = true
+		text, err := Render(r, cfg, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if format == "table" || format == "csv" || format == "csv-raw" || format == "html" {
+			if !strings.Contains(text, "current release: app-current") || !strings.Contains(text, "fallback sizing release for memory: app-previous") {
+				t.Fatalf("%s hid the sizing source: %s", format, text)
+			}
+		} else if !strings.Contains(text, "rolloutFallback") || !strings.Contains(text, "sizingResources") {
+			t.Fatalf("%s lost structured fallback provenance", format)
+		}
+	}
+}
+
+func TestIneligibleCurrentReleaseIsNotLabeledAsSizingSource(t *testing.T) {
+	r := fixture()
+	r.Scans[0].ReleaseComparisons = []model.ReleaseComparison{
+		{Release: model.Release{ID: "current", Name: "app-current", Current: true}},
+	}
+	r.Scans[0].Analysis = &analysis.Output{Results: []analysis.ResourceAnalysis{{Resource: analysis.ResourceMemory, DataQuality: analysis.DataQuality{Status: analysis.DataQualityUnavailable}}}}
+	text := scanNotes(r.Scans[0], tableQuantity)
+	if !strings.Contains(text, "current release: app-current") || strings.Contains(text, "sizing release") {
+		t.Fatalf("ineligible rollout was labeled as a sizing source: %s", text)
 	}
 }

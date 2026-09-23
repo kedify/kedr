@@ -51,7 +51,7 @@ func NewRoot() *cobra.Command {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), Version)
 		return err
 	}})
-	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"))
+	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"), explainCommand())
 	return root
 }
 
@@ -68,6 +68,7 @@ func strategyCommand(name string) *cobra.Command {
 		if cmd.Flags().Changed("cpu-limit") {
 			return usageError{errors.New("--cpu-limit (percentile) is no longer supported; use --cpu-limit-ratio (limit/request multiplier, default 5)")}
 		}
+		cfg.KedrVersion = Version
 		applyPointers(cmd, cfg, b)
 		if err := cfg.Validate(); err != nil {
 			return usageError{err}
@@ -107,9 +108,11 @@ func strategyCommand(name string) *cobra.Command {
 	f.IntVar(&cfg.DiscoveryJobBatchSize, "discovery-job-batch-size", 5000, "Kubernetes job API page size")
 	f.IntVar(&cfg.DiscoveryJobMaxBatches, "discovery-job-max-batches", 100, "Maximum Kubernetes job API pages")
 	f.StringVarP(&cfg.Format, "formatter", "f", "table", "Output formatter (table, json, yaml, pprint, csv, csv-raw, html)")
+	f.BoolVar(&cfg.NoSave, "no-save", false, "Do not save this scan for kedr explain")
+	f.BoolVar(&cfg.Explain, "explain", false, "Show explanations, diagnostics, and score after the table")
 	f.BoolVar(&cfg.ShowClusterName, "show-cluster-name", false, "Always show cluster name")
 	f.BoolVar(&b.excludeSeverity, "exclude-severity", false, "Exclude severity from CSV output")
-	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging")
+	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging and disable progress animation")
 	f.BoolVarP(&cfg.Quiet, "quiet", "q", false, "Disable logs")
 	f.BoolVar(&cfg.LogToStderr, "logtostderr", false, "Write logs to stderr")
 	f.IntVar(&b.width, "width", 0, "Output width")
@@ -122,8 +125,8 @@ func strategyCommand(name string) *cobra.Command {
 func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 	f.Float64Var(&cfg.HistoryDuration, "history-duration", 336, "Prometheus history duration in hours")
 	f.Float64Var(&cfg.TimeframeDuration, "timeframe-duration", 1.25, "Optional OOM query step in minutes; CPU/memory use native scrape samples")
-	f.Float64Var(&cfg.MinimumHistoryHours, "minimum-history-hours", 168, "Minimum observed history required for sizing, independent of query duration")
-	f.IntVar(&cfg.ReleaseHistory, "release-history", 3, "Number of releases to retain: newest for sizing, older releases for comparison only")
+	f.Float64Var(&cfg.MinimumHistoryHours, "minimum-history-hours", cfg.MinimumHistoryHours, "Minimum observed history required for sizing, independent of query duration")
+	f.IntVar(&cfg.ReleaseHistory, "release-history", cfg.ReleaseHistory, "Total rollouts to retain (1-4): current plus up to three previous rollouts for fallback")
 	f.BoolVar(&cfg.DetectMemoryLeaks, "detect-memory-leaks", false, "Enable advisory potential memory-leak detection")
 	if name == "simple" {
 		f.Float64Var(&cfg.CPUPercentile, "cpu-percentile", 95, "CPU recommendation percentile")
@@ -133,7 +136,7 @@ func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 		f.Float64("cpu-limit", 0, "Removed: use --cpu-limit-ratio instead of a percentile")
 	}
 	f.Float64Var(&cfg.MemoryBufferPercent, "memory-buffer-percentage", 15, "Memory peak buffer percentage")
-	f.IntVar(&cfg.PointsRequired, "points-required", 100, "Required metric points")
+	f.IntVar(&cfg.PointsRequired, "points-required", cfg.PointsRequired, "Minimum distinct observation times per resource")
 	f.BoolVar(&cfg.AllowHPA, "allow-hpa", false, "Recommend resources managed by an HPA")
 	f.BoolVar(&cfg.UseOOMKillData, "use-oomkill-data", false, "Include OOM-kill history")
 	f.Float64Var(&cfg.OOMMemoryBuffer, "oom-memory-buffer-percentage", 25, "Memory increase percentage after OOMKilled (shared OOMKilledCoefficient)")

@@ -37,6 +37,8 @@ func (s Secret) MarshalYAML() (any, error) {
 }
 
 type Config struct {
+	NoSave                    bool              `json:"-" yaml:"-"`
+	KedrVersion               string            `json:"-" yaml:"-"`
 	Quiet                     bool              `json:"quiet" yaml:"quiet"`
 	Verbose                   bool              `json:"verbose" yaml:"verbose"`
 	Clusters                  any               `json:"clusters" yaml:"clusters"`
@@ -73,6 +75,7 @@ type Config struct {
 	JobGroupingLabels         []string          `json:"job_grouping_labels" yaml:"job_grouping_labels"`
 	JobGroupingLimit          int               `json:"job_grouping_limit" yaml:"job_grouping_limit"`
 	Format                    string            `json:"format" yaml:"format"`
+	Explain                   bool              `json:"-" yaml:"-"`
 	ShowClusterName           bool              `json:"show_cluster_name" yaml:"show_cluster_name"`
 	Strategy                  string            `json:"strategy" yaml:"strategy"`
 	LogToStderr               bool              `json:"log_to_stderr" yaml:"log_to_stderr"`
@@ -160,10 +163,10 @@ func Default(strategy string) *Config {
 		CPUPercentile:          95,
 		CPURequest:             66,
 		CPULimitRatio:          5,
-		MinimumHistoryHours:    168,
-		ReleaseHistory:         3,
+		MinimumHistoryHours:    float64(analysis.DefaultPolicy().Evidence.MinimumHistorySeconds) / 3600,
+		ReleaseHistory:         analysis.MaxPreviousReleases + 1,
 		MemoryBufferPercent:    15,
-		PointsRequired:         100,
+		PointsRequired:         analysis.DefaultPolicy().Evidence.MinimumSamples,
 		OOMMemoryBuffer:        25,
 	}
 }
@@ -255,8 +258,8 @@ func (c *Config) Validate() error {
 	if c.MemoryBufferPercent <= 0 || c.OOMMemoryBuffer < 0 {
 		return errors.New("invalid memory buffer percentage")
 	}
-	if c.ReleaseHistory < 1 {
-		return errors.New("--release-history must be at least 1")
+	if c.ReleaseHistory < 1 || c.ReleaseHistory > analysis.MaxPreviousReleases+1 {
+		return fmt.Errorf("--release-history must be between 1 and %d (current plus at most three previous rollouts)", analysis.MaxPreviousReleases+1)
 	}
 	if c.Strategy == "simple" && (c.CPUPercentile <= 0 || c.CPUPercentile > 100) {
 		return errors.New("--cpu-percentile must be in (0,100]")

@@ -19,6 +19,7 @@ import (
 	prom "github.com/kedify/kedr/internal/prometheus"
 	"github.com/kedify/kedr/internal/recommend"
 	"github.com/kedify/kedr/internal/report"
+	"github.com/kedify/kedr/internal/runstore"
 	"github.com/kedify/kedr/internal/strategy"
 	"github.com/kedify/kedr/internal/ui"
 )
@@ -37,9 +38,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return errors.New("cannot scan multiple Kubernetes contexts with one explicit Prometheus URL; select one context")
 	}
 	type clusterState struct {
-		clients kube.Clients
-		prom    *prom.Client
-		objects []model.Object
+		clients    kube.Clients
+		prom       *prom.Client
+		objects    []model.Object
+		connection runstore.Connection
 	}
 	states := make([]clusterState, 0, len(clusters))
 	allObjects := 0
@@ -50,10 +52,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if cfg.PrometheusURL != nil {
 			endpoint = *cfg.PrometheusURL
 		} else {
+			started := time.Now()
 			endpoint, err = kube.DiscoverMetricsURL(ctx, cluster)
 			if err != nil {
 				return err
 			}
+			log.Debugf("Metrics endpoint discovery: %s", time.Since(started).Round(time.Millisecond))
 		}
 		pc, createErr := prom.New(ctx, cfg, endpoint, log)
 		if createErr != nil {
@@ -83,22 +87,32 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		} else if end.Sub(start) < 3*time.Hour {
 			reportErrors = append(reportErrors, map[string]any{"name": "NotEnoughHistoryAvailable", "retry_after": start.Add(time.Duration(cfg.HistoryDuration * float64(time.Hour)))})
 		}
+		started := time.Now()
 		objects, listErr := loader.List(ctx, cluster)
 		if listErr != nil {
 			return fmt.Errorf("list Kubernetes workloads: %w", listErr)
 		}
-		states = append(states, clusterState{cluster, pc, objects})
+		log.Debugf("Workload discovery: %s (%d containers)", time.Since(started).Round(time.Millisecond), len(objects))
+		apiServer := ""
+		if cluster.REST != nil {
+			apiServer = cluster.REST.Host
+		}
+		states = append(states, clusterState{cluster, pc, objects, runstore.SavedConnection(cfg, cluster.Name, endpoint, apiServer, autoDiscovered)})
 		allObjects += len(objects)
 	}
 	if allObjects == 0 {
 		return errors.New("no objects available to scan; change the filters or verify permissions")
 	}
 	sem := make(chan struct{}, cfg.MaxWorkers)
-	progress := ui.StartProgress(allObjects, !cfg.Quiet && isTerminal(os.Stderr))
+	if cfg.Verbose {
+		log.Infof("Calculating recommendations")
+	}
+	progress := ui.StartProgress(allObjects, !cfg.Quiet && !cfg.Verbose && isTerminal(os.Stderr))
 	defer progress.Stop()
 	group, groupCtx := errgroup.WithContext(ctx)
 	var mu sync.Mutex
 	scans := make([]model.Scan, 0, allObjects)
+	savedRows := make(map[string]runstore.Row)
 	for stateIndex := range states {
 		state := &states[stateIndex]
 		for objectIndex := range state.objects {
@@ -110,21 +124,37 @@ func Run(ctx context.Context, cfg *config.Config) error {
 					return groupCtx.Err()
 				}
 				defer func() { <-sem }()
+				started := time.Now()
 				var observationErr error
 				object, observationErr = loader.Observe(groupCtx, state.clients, object)
 				if observationErr != nil {
 					log.Warnf("identity/inventory lookup failed for %s/%s: %v", object.Namespace, object.Name, observationErr)
 					object.Warnings = append(object.Warnings, "IdentityInventoryCollectionFailed")
 				}
+				inventoryTime := time.Since(started)
+				started = time.Now()
 				object = state.prom.HistoricalPods(groupCtx, object)
+				historyTime := time.Since(started)
+				started = time.Now()
 				metrics, metricWarnings := state.prom.Gather(groupCtx, object)
+				metricsTime := time.Since(started)
 				object.Warnings = append(object.Warnings, metricWarnings...)
+				started = time.Now()
 				raw, analyzeErr := strategy.Run(cfg, metrics, object)
 				if analyzeErr != nil {
 					return analyzeErr
 				}
+				log.Debugf("Scanned %s/%s/%s: inventory=%s history=%s metrics=%s analysis=%s", object.Namespace, object.Name, object.Container,
+					inventoryTime.Round(time.Millisecond), historyTime.Round(time.Millisecond), metricsTime.Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
 				scan := recommend.Scan(object, raw)
+				var saved runstore.Row
+				if !cfg.NoSave {
+					saved = runstore.NewRow(scan, metrics, state.connection)
+				}
 				mu.Lock()
+				if !cfg.NoSave {
+					savedRows[rowKey(object)] = saved
+				}
 				scans = append(scans, scan)
 				mu.Unlock()
 				progress.Increment()
@@ -168,6 +198,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 		log.Infof("Wrote report to %s", name)
 	}
+	if !cfg.NoSave {
+		rows := make([]runstore.Row, len(scans))
+		for i, scan := range scans {
+			rows[i] = savedRows[rowKey(scan.Object)]
+		}
+		store, saveErr := runstore.Default()
+		var saved runstore.Run
+		if saveErr == nil {
+			saved, saveErr = store.Save(runstore.Run{KedrVersion: cfg.KedrVersion, Strategy: cfg.Strategy, Rows: rows})
+		}
+		if saveErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: this scan could not be saved for kedr explain: %v\n", saveErr)
+		} else if cfg.Format == "table" {
+			fmt.Fprintf(os.Stdout, "\nSaved run %s · Explain a row: kedr explain 1\n", saved.ID)
+		}
+	}
+
 	return nil
 }
 
@@ -176,7 +223,7 @@ func description(cfg *config.Config) string {
 	if cfg.Strategy == "simple_limit" {
 		percentile, limit = cfg.CPURequest, fmt.Sprintf("request × %g", cfg.CPULimitRatio)
 	}
-	description := fmt.Sprintf("[b]Kedify Recommender — %s[/b]\n\nCPU request: per-series nearest-rank P%g, maximum across replicas; limit: %s\nMemory: selected-release peak + %g%%; request/limit ratio 1\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\nRetain up to %d releases: newest for sizing, previous releases for comparison only.\nShared analyzer history, coverage, freshness, inventory and material-change guards apply.", cfg.Strategy, percentile, limit, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.MinimumHistoryHours, cfg.ReleaseHistory)
+	description := fmt.Sprintf("[b]Kedify Recommender — %s[/b]\n\nCPU request: per-series nearest-rank P%g, maximum across replicas; limit: %s\nMemory: selected-release peak + %g%%; request/limit ratio 1\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\nRetain up to %d rollouts: use current usage, falling back through at most three previous rollouts when history or samples are insufficient.\nShared analyzer history, coverage, freshness, inventory and material-change guards apply.", cfg.Strategy, percentile, limit, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.MinimumHistoryHours, cfg.ReleaseHistory)
 	if cfg.UseOOMKillData {
 		description += "\nOOMKilled observations are included; unknown event-time limits use the analyzer's conservative fallback."
 	}
@@ -192,4 +239,13 @@ func description(cfg *config.Config) string {
 var isTerminal = func(file *os.File) bool {
 	info, err := file.Stat()
 	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
+}
+
+// Length-prefixed components prevent collisions in multi-cluster row mapping.
+func rowKey(o model.Object) string {
+	cluster := ""
+	if o.Cluster != nil {
+		cluster = *o.Cluster
+	}
+	return fmt.Sprintf("%q/%q/%q/%q/%q", cluster, o.Namespace, o.Kind, o.Name, o.Container)
 }

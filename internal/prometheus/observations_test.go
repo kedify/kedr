@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,7 +54,7 @@ func TestUsageIdentityAndContainerLifetimes(t *testing.T) {
 
 func TestOOMUsesTerminationValueAndUnknownHistoricalLimit(t *testing.T) {
 	object := model.Object{UID: "workload", Container: "app", Pods: []model.Pod{{Name: "p", UID: "pod-uid", Release: "A", CreatedAt: 1000}}}
-	raw := []series{{Metric: map[string]string{"pod": "p", "uid": "pod-uid"}, Values: [][]json.RawMessage{pair(100, "5"), pair(200, "5")}}}
+	raw := []series{{Metric: map[string]string{"pod": "p", "uid": "pod-uid"}, Values: []samplePair{{100, 5}, {200, 5}}}}
 	rows, err := eventSamples(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -88,9 +92,9 @@ func TestMetricChunksPreserveAllHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var requests int
+	var requests atomic.Int32
 	client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		requests++
+		requests.Add(1)
 		query := r.URL.Query().Get("query")
 		if r.URL.Path != "/api/v1/query" || strings.Contains(query, "timestamp(") {
 			t.Errorf("must fetch native range vectors: %s", r.URL)
@@ -109,17 +113,173 @@ func TestMetricChunksPreserveAllHistory(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	start := time.Unix(1800000000, 0)
-	rows, err := client.loadMetric(context.Background(), "MemoryUsage", model.Object{Pods: []model.Pod{{Name: "p"}}}, start, start.Add(48*time.Hour))
+	pods := make([]model.Pod, 50)
+	for i := range pods {
+		pods[i].Name = fmt.Sprintf("p-%d", i)
+	}
+	rows, err := client.loadMetric(context.Background(), "MemoryUsage", model.Object{Pods: pods}, start, start.Add(48*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requests != 8 || len(rows) != 1 || len(rows[0].samples) != 8 {
-		t.Fatalf("chunk history lost: requests=%d, rows=%+v", requests, rows)
+	if requests.Load() != 8 || len(rows) != 1 || len(rows[0].samples) != 8 {
+		t.Fatalf("chunk history lost: requests=%d, rows=%+v", requests.Load(), rows)
+	}
+	for i, sample := range rows[0].samples {
+		if sample.Timestamp != start.Add(time.Duration(i+1)*6*time.Hour).UnixMilli() {
+			t.Fatalf("chunks merged out of order: %+v", rows[0].samples)
+		}
+	}
+}
+
+func TestChunkLifetimeFilteringPreservesUsage(t *testing.T) {
+	start := time.Unix(1800000000, 0)
+	end := start.Add(8 * 300 * time.Hour)
+	birth := start.Add(7 * 300 * time.Hour).UnixMilli()
+	object := model.Object{UID: "workload", Namespace: "ns", Container: "app", Pods: []model.Pod{
+		{Name: "p", UID: "old", Release: "A", CreatedAt: birth, EndedAt: birth + 1000},
+		{Name: "p", UID: "new", Release: "B", CreatedAt: birth + 1000},
+	}}
+	cfg := config.Default("simple")
+	client, err := New(context.Background(), cfg, "https://metrics.example", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		query := r.URL.Query().Get("query")
+		if strings.Contains(query, "p|p") {
+			t.Error("reused pod names should only be fetched once")
+		}
+		at, _ := strconv.ParseFloat(r.URL.Query().Get("time"), 64)
+		match := regexp.MustCompile(`\[(\d+)ms\]$`).FindStringSubmatch(query)
+		duration, _ := strconv.ParseInt(match[1], 10, 64)
+		points := []any{}
+		for _, ts := range []int64{birth, birth + 1000, end.UnixMilli()} {
+			if ts > int64(at*1000)-duration && ts <= int64(at*1000) {
+				points = append(points, []any{float64(ts) / 1000, "10"})
+			}
+		}
+		data, marshalErr := json.Marshal(map[string]any{"status": "success", "data": map[string]any{"result": []any{map[string]any{"metric": map[string]string{"pod": "p", "id": "lifetime"}, "values": points}}}})
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+	})}
+	rows, err := client.loadMetric(context.Background(), "MemoryUsage", object, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("queried before pod creation: %d requests", requests.Load())
+	}
+	got, excluded := convertUsage(rows, object, analysis.SampleGauge)
+	want, _ := convertUsage([]sampledSeries{{labels: map[string]string{"pod": "p", "id": "lifetime"}, samples: []analysis.Sample{
+		{Timestamp: birth, Value: 10}, {Timestamp: birth + 1000, Value: 10}, {Timestamp: end.UnixMilli(), Value: 10},
+	}}}, object, analysis.SampleGauge)
+	if excluded || !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifetime boundary samples changed: got %+v, want %+v", got, want)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err = client.loadMetric(ctx, "MemoryUsage", object, start, end); err == nil {
+		t.Fatal("canceled collection returned success")
+	}
+}
+
+func TestAdaptiveChunksBoundResponsesWithoutGaps(t *testing.T) {
+	for _, tc := range []struct{ pods, requests int }{{1, 2}, {7, 8}, {50, 56}, {51, 112}} {
+		t.Run(strconv.Itoa(tc.pods), func(t *testing.T) {
+			cfg := config.Default("simple")
+			client, err := New(context.Background(), cfg, "https://metrics.example", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.UnixMilli(1800000000125)
+			end := start.Add(14 * 24 * time.Hour)
+			windows := map[string][][2]int64{}
+			var mu sync.Mutex
+			var requests atomic.Int32
+			queryPattern := regexp.MustCompile(`pod=~("[^"]+").*\[(\d+)ms\]$`)
+			client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				match := queryPattern.FindStringSubmatch(r.URL.Query().Get("query"))
+				if len(match) != 3 {
+					return nil, fmt.Errorf("unexpected query: %s", r.URL)
+				}
+				pattern, _ := strconv.Unquote(match[1])
+				pods := strings.Split(pattern, "|")
+				duration, _ := strconv.ParseInt(match[2], 10, 64)
+				if duration*int64(len(pods)) > (300*time.Hour).Milliseconds() || len(pods) > 50 {
+					t.Error("response exceeds pod/time budget")
+				}
+				at, _ := strconv.ParseFloat(r.URL.Query().Get("time"), 64)
+				last := int64(at * 1000)
+				mu.Lock()
+				for _, pod := range pods {
+					windows[pod] = append(windows[pod], [2]int64{last - duration, last})
+				}
+				mu.Unlock()
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status":"success","data":{"result":[]}}`))}, nil
+			})}
+			pods := make([]model.Pod, tc.pods)
+			for i := range pods {
+				pods[i].Name = fmt.Sprintf("p-%d", i)
+			}
+			if _, err = client.loadMetric(context.Background(), "CPUUsage", model.Object{Pods: pods}, start, end); err != nil {
+				t.Fatal(err)
+			}
+			if int(requests.Load()) != tc.requests || len(windows) != tc.pods {
+				t.Fatalf("requests=%d pods=%d, want %+v", requests.Load(), len(windows), tc)
+			}
+			for pod, chunks := range windows {
+				sort.Slice(chunks, func(i, j int) bool { return chunks[i][0] < chunks[j][0] })
+				cursor := start.UnixMilli()
+				for _, chunk := range chunks {
+					if chunk[0] != cursor {
+						t.Fatalf("gap or overlap for %s: cursor=%d chunk=%v", pod, cursor, chunk)
+					}
+					cursor = chunk[1]
+				}
+				if cursor != end.UnixMilli() {
+					t.Fatalf("truncated window for %s: %d", pod, cursor)
+				}
+			}
+		})
+	}
+}
+
+func TestOOMChunksRetainObservationsAfterPodEnded(t *testing.T) {
+	cfg := config.Default("simple")
+	client, err := New(context.Background(), cfg, "https://metrics.example", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(1800000000, 0)
+	termination := start.Add(30 * time.Minute)
+	object := model.Object{UID: "workload", Container: "app", Pods: []model.Pod{{Name: "p", UID: "uid", Release: "A", CreatedAt: start.UnixMilli(), EndedAt: start.Add(time.Hour).UnixMilli()}}}
+	var requests atomic.Int32
+	client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Error("OOM expression must use query_range")
+		}
+		at, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
+		body := fmt.Sprintf(`{"status":"success","data":{"result":[{"metric":{"pod":"p"},"values":[[%d,"%d"]]}]}}`, at, termination.Unix())
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	rows, err := client.loadMetric(context.Background(), "OOMKilledTimestamp", object, start, start.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kills := convertOOMEvents(rows, object, start.UnixMilli(), start.Add(24*time.Hour).UnixMilli())
+	if requests.Load() != 4 || len(kills) != 1 || kills[0].Timestamp != termination.UnixMilli() {
+		t.Fatalf("OOM event lost: requests=%d kills=%+v", requests.Load(), kills)
 	}
 }
 
 func TestNativeSamplesPreserveScrapesOffQueryGrid(t *testing.T) {
-	rows := []series{{Metric: map[string]string{"pod": "p"}, Values: [][]json.RawMessage{pair(60.125, "1"), pair(120.125, "2"), pair(180.125, "3"), pair(240.125, "4")}}}
+	rows := []series{{Metric: map[string]string{"pod": "p"}, Values: []samplePair{{60.125, 1}, {120.125, 2}, {180.125, 3}, {240.125, 4}}}}
 	samples, err := nativeSamples(rows)
 	if err != nil || len(samples[0].samples) != 4 || samples[0].samples[1].Timestamp != 120125 {
 		t.Fatalf("native scrapes lost: %+v, %v", samples, err)

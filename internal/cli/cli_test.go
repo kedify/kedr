@@ -20,7 +20,7 @@ func TestHelpAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history"} {
+	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help missing %s", flag)
 		}
@@ -28,6 +28,19 @@ func TestHelpAndVersion(t *testing.T) {
 	output, err = execute("version")
 	if err != nil || strings.TrimSpace(output) != "dev" {
 		t.Fatalf("version=%q err=%v", output, err)
+	}
+}
+
+func TestRolloutEvidenceDefaults(t *testing.T) {
+	root := NewRoot()
+	for _, name := range []string{"simple", "simple_limit"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmd.Flags().Lookup("minimum-history-hours").DefValue != "1" || cmd.Flags().Lookup("points-required").DefValue != "30" || cmd.Flags().Lookup("release-history").DefValue != "4" {
+			t.Fatal("CLI defaults do not match one hour, 30 observations and current plus three previous rollouts")
+		}
 	}
 }
 

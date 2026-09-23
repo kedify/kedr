@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
-// Progress renders a lightweight terminal spinner without switching terminal
-// modes or querying terminal capabilities.
+const progressTitle = "Calculating recommendations"
+
+// Progress renders a spinner and shimmering title without switching terminal
+// modes or sending terminal capability queries.
 type Progress struct {
 	out      io.Writer
 	total    int
@@ -27,7 +31,7 @@ type Progress struct {
 
 // StartProgress starts a progress renderer when enabled.
 func StartProgress(total int, enabled bool) *Progress {
-	return startProgress(total, enabled, os.Stderr)
+	return startProgress(total, enabled, colorprofile.NewWriter(os.Stderr, os.Environ()))
 }
 
 func startProgress(total int, enabled bool, out io.Writer) *Progress {
@@ -41,28 +45,36 @@ func startProgress(total int, enabled bool, out io.Writer) *Progress {
 
 func (p *Progress) run() {
 	defer close(p.finished)
-	frames := spinner.Dot.Frames
-	ticker := time.NewTicker(spinner.Dot.FPS)
+	frames := shimmerFrames(progressTitle)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	frame := 0
-	p.render(frames[frame])
+	spinnerTicker := time.NewTicker(spinner.Dot.FPS)
+	defer spinnerTicker.Stop()
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(progressColor))
+	frame, spinnerFrame := 0, 0
+	render := func() {
+		p.render(style.Render(spinner.Dot.Frames[spinnerFrame]) + frames[frame])
+	}
+	render()
 	for {
 		select {
 		case <-ticker.C:
 			frame = (frame + 1) % len(frames)
-			p.render(frames[frame])
+		case <-spinnerTicker.C:
+			spinnerFrame = (spinnerFrame + 1) % len(spinner.Dot.Frames)
 		case <-p.done:
 			p.clear()
 			return
 		}
+		render()
 	}
 }
 
 func (p *Progress) render(frame string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	line := fmt.Sprintf("%sCalculating recommendations %d/%d", frame, p.current, p.total)
-	p.lineSize = len([]rune(line))
+	line := fmt.Sprintf("%s %d/%d", frame, p.current, p.total)
+	p.lineSize = lipgloss.Width(line)
 	_, _ = fmt.Fprintf(p.out, "\r%s", line)
 }
 

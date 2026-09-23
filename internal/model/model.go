@@ -2,7 +2,9 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 
@@ -39,6 +41,26 @@ func (v MaybeValue) Interface() any {
 }
 
 func (v MaybeValue) MarshalJSON() ([]byte, error) { return json.Marshal(v.Interface()) }
+
+// UnmarshalJSON restores the public number/null/"?" representation without
+// collapsing unknown and unset when a saved decision is loaded.
+func (v *MaybeValue) UnmarshalJSON(data []byte) error {
+	*v = Unset()
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+	if bytes.Equal(data, []byte(`"?"`)) {
+		*v = Unknown()
+		return nil
+	}
+	var n float64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("invalid allocation: %w", err)
+	}
+	*v = Number(n)
+	return nil
+}
 
 type Allocations struct {
 	Requests map[ResourceType]MaybeValue `json:"requests" yaml:"requests"`
@@ -91,9 +113,10 @@ type ReleaseUsage struct {
 }
 
 type ReleaseComparison struct {
-	Release Release      `json:"release" yaml:"release"`
-	CPU     ReleaseUsage `json:"cpu" yaml:"cpu"`
-	Memory  ReleaseUsage `json:"memory" yaml:"memory"`
+	Release         Release        `json:"release" yaml:"release"`
+	CPU             ReleaseUsage   `json:"cpu" yaml:"cpu"`
+	Memory          ReleaseUsage   `json:"memory" yaml:"memory"`
+	SizingResources []ResourceType `json:"sizingResources,omitempty" yaml:"sizingResources,omitempty"`
 }
 
 type HPA struct {

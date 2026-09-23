@@ -41,12 +41,12 @@ func TestAnalyzerPolicyMapping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if policy.Memory.LeakDetection == nil || policy.Memory.OOMKilledCoefficient != 1.25 || policy.Memory.LimitsToRequestsRatio != 1 || policy.Evidence.MinimumHistorySeconds != 7*86400 || policy.CPU.RequestsOnly != (name == "simple") {
+		if policy.Memory.LeakDetection == nil || policy.Memory.OOMKilledCoefficient != 1.25 || policy.Memory.LimitsToRequestsRatio != 1 || policy.Evidence.MinimumHistorySeconds != 3600 || policy.Evidence.MinimumSamples != 30 || policy.CPU.RequestsOnly != (name == "simple") {
 			t.Fatalf("wrong policy: %+v", policy)
 		}
 		cfg.HistoryDuration = 24
 		policy, _ = cfg.AnalysisPolicy()
-		if policy.Evidence.MinimumHistorySeconds != 7*86400 {
+		if policy.Evidence.MinimumHistorySeconds != 3600 {
 			t.Fatal("short query weakened sizing guard")
 		}
 	}
@@ -60,6 +60,7 @@ func TestInvalidAnalyzerSettings(t *testing.T) {
 		func(c *Config) { c.MemoryMinValue = 2 * 1024 * 1024 },
 		func(c *Config) { c.PointsRequired = 1 },
 		func(c *Config) { c.ReleaseHistory = 0 },
+		func(c *Config) { c.ReleaseHistory = 5 },
 		func(c *Config) { c.MemoryBufferPercent = math.NaN() },
 		func(c *Config) { c.HistoryDuration = math.Inf(1) },
 	} {
@@ -118,7 +119,7 @@ func TestEmptySlicesSerializeAsArrays(t *testing.T) {
 			t.Fatalf("missing %s: %s", field, text)
 		}
 	}
-	for _, field := range []string{`"history_duration":"336"`, `"points_required":"100"`, `"allow_hpa":false`} {
+	for _, field := range []string{`"history_duration":"336"`, `"points_required":"30"`, `"allow_hpa":false`} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("missing KRR-compatible other_args field %s: %s", field, text)
 		}

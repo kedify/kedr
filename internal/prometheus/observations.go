@@ -25,6 +25,11 @@ type sampledSeries struct {
 func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metrics, []string) {
 	end := time.Now().UTC()
 	start := end.Add(-history(c.cfg))
+	return c.GatherWindow(ctx, object, start, end)
+}
+
+// GatherWindow collects native observations for an immutable saved interval.
+func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, end time.Time) (strategy.Metrics, []string) {
 	result := strategy.Metrics{WindowStart: start.UnixMilli(), EvaluationTime: end.UnixMilli()}
 	var warnings []string
 	for _, metric := range MetricsForStrategy(c.cfg) {
@@ -61,22 +66,48 @@ func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metr
 }
 
 func (c *Client) loadMetric(ctx context.Context, metric string, object model.Object, start, end time.Time) ([]sampledSeries, error) {
-	var combined []sampledSeries
+	merged := make(map[string]sampledSeries)
 	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(c.cfg.MaxWorkers)
 	var mu sync.Mutex
-	for first := 0; first < len(object.Pods); first += 50 {
-		last := min(first+50, len(object.Pods))
-		batch := object
-		batch.Pods = object.Pods[first:last]
-		group.Go(func() error {
-			query := BuildMetricQuery(metric, batch, c.cfg)
-			// Keep each response bounded even for long lookbacks and many pods.
-			chunkDuration := 6 * time.Hour
-			for chunkStart := start; chunkStart.Before(end); {
-				chunkEnd := chunkStart.Add(chunkDuration)
-				if chunkEnd.After(end) {
-					chunkEnd = end
-				}
+	// Keep the original response budget (50 pods × 6 hours), but let small
+	// workloads fetch longer windows instead of paying for mostly empty queries.
+	names := make(map[string]struct{}, len(object.Pods))
+	for _, pod := range object.Pods {
+		names[pod.Name] = struct{}{}
+	}
+	chunkDuration := 6 * time.Hour
+	if metric != "OOMKilledTimestamp" && len(names) > 0 && len(names) < 50 {
+		chunkDuration = chunkDuration * 50 / time.Duration(len(names))
+		// Prometheus range selectors and evaluation times use milliseconds.
+		chunkDuration = chunkDuration.Truncate(time.Millisecond)
+	}
+	// Schedule time chunks as well as pod batches. Otherwise a small workload
+	// serializes an entire lookback (112 requests for two metrics over 14 days).
+	// The client's query semaphore also bounds requests across all workloads.
+	for chunkStart := start; chunkStart.Before(end); chunkStart = chunkStart.Add(chunkDuration) {
+		chunkEnd := minTime(chunkStart.Add(chunkDuration), end)
+		var pods []model.Pod
+		seen := make(map[string]bool)
+		for _, pod := range object.Pods {
+			// Usage outside a verified pod lifetime is discarded by convertUsage.
+			// OOM values can describe earlier events, so retain their whole window.
+			if metric != "OOMKilledTimestamp" && (pod.CreatedAt > chunkEnd.UnixMilli() || pod.EndedAt > 0 && pod.EndedAt <= chunkStart.UnixMilli()) {
+				continue
+			}
+			if !seen[pod.Name] {
+				pods = append(pods, pod)
+				seen[pod.Name] = true
+			}
+		}
+		for first := 0; first < len(pods); first += 50 {
+			if groupCtx.Err() != nil {
+				break
+			}
+			batch := object
+			batch.Pods = pods[first:min(first+50, len(pods))]
+			group.Go(func() error {
+				query := BuildMetricQuery(metric, batch, c.cfg)
 				var samples []sampledSeries
 				var err error
 				if metric == "OOMKilledTimestamp" {
@@ -98,42 +129,51 @@ func (c *Client) loadMetric(ctx context.Context, metric string, object model.Obj
 					return err
 				}
 				mu.Lock()
-				combined = append(combined, samples...)
+				// Merge as each response finishes instead of retaining a second
+				// complete copy of the unmerged history until all queries finish.
+				for _, row := range samples {
+					key := labelsKey(row.labels)
+					item, exists := merged[key]
+					if !exists {
+						merged[key] = row
+						continue
+					}
+					item.samples = append(item.samples, row.samples...)
+					merged[key] = item
+				}
 				mu.Unlock()
-				chunkStart = chunkEnd
-			}
-			return nil
-		})
+				return nil
+			})
+		}
 	}
 	if err := group.Wait(); err != nil {
 		return nil, err
 	}
-	// A source series may occur in several time chunks. Merge only identical
-	// label sets; keep duplicate source timestamps for the analyzer to validate.
-	merged := make(map[string]sampledSeries)
-	for _, row := range combined {
-		key := labelsKey(row.labels)
-		item := merged[key]
-		item.labels = row.labels
-		item.samples = append(item.samples, row.samples...)
-		merged[key] = item
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	out := make([]sampledSeries, 0, len(merged))
 	for _, row := range merged {
+		// Responses can finish out of order. Keep duplicate source timestamps
+		// for the analyzer to validate, while restoring chronological order.
+		sort.SliceStable(row.samples, func(i, j int) bool { return row.samples[i].Timestamp < row.samples[j].Timestamp })
 		out = append(out, row)
 	}
 	return out, nil
 }
 
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
 func nativeSamples(rows []series) ([]sampledSeries, error) {
 	out := make([]sampledSeries, 0, len(rows))
 	for _, row := range rows {
-		result := sampledSeries{labels: row.Metric}
-		for _, raw := range row.Values {
-			p, err := parsePair(raw)
-			if err != nil {
-				return nil, err
-			}
+		result := sampledSeries{labels: row.Metric, samples: make([]analysis.Sample, 0, len(row.Values))}
+		for _, p := range row.Values {
 			if math.IsNaN(p.Time) || math.IsInf(p.Time, 0) || p.Time <= 0 || p.Time >= float64(math.MaxInt64)/1000 || math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
 				return nil, errors.New("invalid native usage sample")
 			}
@@ -158,12 +198,8 @@ func labelsKey(labels map[string]string) string {
 func eventSamples(rows []series) ([]sampledSeries, error) {
 	out := make([]sampledSeries, 0, len(rows))
 	for _, row := range rows {
-		result := sampledSeries{labels: row.Metric}
-		for _, raw := range row.Values {
-			p, err := parsePair(raw)
-			if err != nil {
-				return nil, err
-			}
+		result := sampledSeries{labels: row.Metric, samples: make([]analysis.Sample, 0, len(row.Values))}
+		for _, p := range row.Values {
 			if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 || p.Value >= float64(math.MaxInt64)/1000 {
 				return nil, errors.New("invalid OOM event time")
 			}

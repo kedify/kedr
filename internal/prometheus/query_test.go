@@ -63,51 +63,68 @@ func TestConvertSeriesPrefersKubelet(t *testing.T) {
 }
 
 func TestMetricBatchesRunConcurrentlyWithinWorkerLimit(t *testing.T) {
-	cfg := config.Default("simple")
-	cfg.MaxWorkers = 2
-	client, err := New(context.Background(), cfg, "https://prometheus.example", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range []struct {
+		name   string
+		pods   int
+		window time.Duration
+		calls  int
+	}{
+		{"pod batches", 101, time.Hour, 1},
+		{"time chunks", 1, 600 * time.Hour, 1},
+		{"shared client limit", 1, 600 * time.Hour, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default("simple")
+			cfg.MaxWorkers = 2
+			client, err := New(context.Background(), cfg, "https://prometheus.example", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	var active, maximum atomic.Int32
-	started := make(chan struct{}, 16)
-	release := make(chan struct{})
-	client.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		current := active.Add(1)
-		for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
-		}
-		started <- struct{}{}
-		<-release
-		active.Add(-1)
-		body := `{"status":"success","data":{"resultType":"vector","result":[]}}`
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
-	})}
+			var active, maximum atomic.Int32
+			started := make(chan struct{}, 16)
+			release := make(chan struct{})
+			client.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				current := active.Add(1)
+				for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
+				}
+				started <- struct{}{}
+				<-release
+				active.Add(-1)
+				body := `{"status":"success","data":{"resultType":"vector","result":[]}}`
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
 
-	pods := make([]model.Pod, 101)
-	for i := range pods {
-		pods[i].Name = "pod-" + strconv.Itoa(i)
-	}
-	done := make(chan error, 1)
-	go func() {
-		now := time.Now()
-		_, loadErr := client.loadMetric(context.Background(), "MemoryUsage", model.Object{Namespace: "default", Container: "app", Pods: pods}, now.Add(-time.Hour), now)
-		done <- loadErr
-	}()
+			pods := make([]model.Pod, tc.pods)
+			for i := range pods {
+				pods[i].Name = "pod-" + strconv.Itoa(i)
+			}
+			done := make(chan error, tc.calls)
+			for range tc.calls {
+				go func() {
+					now := time.Now()
+					_, loadErr := client.loadMetric(context.Background(), "MemoryUsage", model.Object{Namespace: "default", Container: "app", Pods: pods}, now.Add(-tc.window), now)
+					done <- loadErr
+				}()
+			}
 
-	for range cfg.MaxWorkers {
-		select {
-		case <-started:
-		case <-time.After(time.Second):
+			for range cfg.MaxWorkers {
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					close(release)
+					t.Fatal("metric batches did not run concurrently")
+				}
+			}
 			close(release)
-			t.Fatal("metric batches did not run concurrently")
-		}
-	}
-	close(release)
-	if err = <-done; err != nil {
-		t.Fatal(err)
-	}
-	if got := maximum.Load(); int64(got) != int64(cfg.MaxWorkers) {
-		t.Fatalf("maximum concurrent requests=%d, want %d", got, cfg.MaxWorkers)
+			for range tc.calls {
+				if err = <-done; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := maximum.Load(); int64(got) != int64(cfg.MaxWorkers) {
+				t.Fatalf("maximum concurrent requests=%d, want %d", got, cfg.MaxWorkers)
+			}
+		})
 	}
 }

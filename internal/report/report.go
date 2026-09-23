@@ -208,21 +208,43 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	if title != "" {
 		title += "\n\n"
 	}
+	table := title + t.String()
+	if !cfg.Explain {
+		return table
+	}
 	var notes strings.Builder
 	for _, scan := range report.Scans {
 		if text := scanNotes(scan, tableQuantity); text != "" {
 			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
 		}
 	}
-	return title + t.String() + "\nDiff columns: total request change across current pods; parentheses: change per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+	return table + "\nDiff columns: total request change across current pods; parentheses: change per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
 }
 
 func scanNotes(scan model.Scan, format func(model.ResourceType) func(float64) string) string {
 	parts := append([]string(nil), scan.Object.Warnings...)
+	hasSizingSources := false
+	for _, comparison := range scan.ReleaseComparisons {
+		hasSizingSources = hasSizingSources || len(comparison.SizingResources) > 0
+	}
 	for _, comparison := range scan.ReleaseComparisons {
 		role := "comparison only"
 		if comparison.Release.Current {
-			role = "sizing release"
+			role = "current release"
+			// Older reports have no explicit source mapping.
+			if !hasSizingSources && scan.Analysis == nil {
+				role = "sizing release"
+			}
+		}
+		if len(comparison.SizingResources) > 0 {
+			resources := make([]string, 0, len(comparison.SizingResources))
+			for _, resource := range comparison.SizingResources {
+				resources = append(resources, string(resource))
+			}
+			role = "fallback sizing release for " + strings.Join(resources, ", ")
+			if comparison.Release.Current {
+				role = "current sizing release for " + strings.Join(resources, ", ")
+			}
 		}
 		cpu, memory := "?", "?"
 		if comparison.CPU.AggregatedUsage.Available {
