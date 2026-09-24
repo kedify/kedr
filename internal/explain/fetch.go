@@ -3,7 +3,6 @@ package explain
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -79,8 +78,8 @@ func Fetch(ctx context.Context, row runstore.Row, cfg *config.Config) (strategy.
 	if err := ctx.Err(); err != nil {
 		return strategy.Metrics{}, nil, err
 	}
-	if len(metrics.CPU) == 0 && len(metrics.Memory) == 0 {
-		return metrics, warnings, fmt.Errorf("no historical usage returned; verify credentials, source retention, and saved selectors")
+	if len(metrics.CPU) == 0 && len(metrics.Memory) == 0 && len(savedOOMEvents(row)) == 0 {
+		return metrics, warnings, errors.New("no historical usage returned; verify credentials, source retention, and saved selectors")
 	}
 	return metrics, warnings, nil
 }

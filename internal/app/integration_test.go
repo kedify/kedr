@@ -248,6 +248,22 @@ func TestOOMKilledPodWithoutMetrics(t *testing.T) {
 			if tc.enabled && tc.wantMi == 100 && !strings.Contains(text, "+50Mi") {
 				t.Fatalf("failed OOM pod must show its per-container memory increase: %s", text)
 			}
+			if !tc.enabled {
+				continue
+			}
+			store := runstore.Store{Root: t.TempDir()}
+			saved, err := store.Save(runstore.Run{Strategy: name, Rows: []runstore.Row{runstore.NewRow(scan, metrics, runstore.Connection{OOM: true})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := store.Load(saved.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := explain.Build(loaded, loaded.Rows[0])
+			if doc.Cards[2].Outcome != "recommended" || !strings.Contains(doc.Cards[2].Reason, "were not required") || !strings.Contains(doc.Cards[2].Reason, "current memory settings") {
+				t.Fatalf("saved explanation lost OOM-only decision: %+v", doc.Cards[2])
+			}
 		}
 	}
 }

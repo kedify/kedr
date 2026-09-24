@@ -38,6 +38,7 @@ type Document struct {
 	Technical   string
 	Queries     []string
 	Charts      []Chart
+	OOMEvents   []Event
 }
 type Card struct {
 	Title       string
@@ -94,8 +95,7 @@ type Line struct {
 	Style string  `json:"style"`
 }
 type Event struct {
-	Time int64 `json:"time"
- "unicode"`
+	Time  int64  `json:"time"`
 	Label string `json:"label"`
 	Kind  string `json:"kind"`
 }
@@ -179,6 +179,15 @@ func Build(run runstore.Run, row runstore.Row) Document {
 						if setting == analysis.SettingRequests && a.Evidence.CurrentRequest.Unset || setting == analysis.SettingLimits && a.Evidence.CurrentLimit.Unset {
 							card.Reason = "The usage-based candidate passed the evaluated safety guards. This setting was unset, so minimum-change thresholds do not apply."
 						}
+						if a.OOMAdjustment != nil {
+							card.Reason = "A current-rollout OOM kill supplied a memory sizing floor. The candidate passed the evaluated setting guards."
+							if a.DecisionTrace.Source.Method == "OOM kill" {
+								card.Reason += " Usage history, sample count, coverage, and usage freshness were not required."
+							}
+							if a.OOMAdjustment.UsedCurrentFallback {
+								card.Reason += " The limit at termination was unknown; current memory settings supplied the fallback baseline."
+							}
+						}
 					case "disabled":
 						card.Reason = "This strategy changes requests only; the existing limit is preserved."
 					case "retained":
@@ -222,8 +231,16 @@ func Build(run runstore.Run, row runstore.Row) Document {
 							step.Detail = fmt.Sprintf("%s request × %g = %s limit candidate", native(r, s.Values["request"]), s.Values["ratio"], native(r, s.Values["candidate"]))
 						case "OOM floor":
 							step.Detail = fmt.Sprintf("Larger of %s baseline and %s OOM floor → %s", native(r, s.Values["baseline"]), native(r, s.Values["floor"]), native(r, s.Values["candidate"]))
+							if oomOnly(a) {
+								step.Detail = fmt.Sprintf("No qualifying usage baseline was used. The OOM floor sets the request candidate to %s.", native(r, s.Values["candidate"]))
+							}
+						case "OOM sizing without usage history":
+							step.Detail = "A current-rollout OOM authorizes a memory increase without qualifying usage samples."
 						case "request bounds", "limit bounds":
 							step.Detail = fmt.Sprintf("%s → %s; allowed range %s to %s", native(r, s.Values["before"]), native(r, s.Values["candidate"]), native(r, s.Values["minimum"]), native(r, s.Values["maximum"]))
+							if s.Values["before"] < s.Values["minimum"] && s.Values["candidate"] == s.Values["minimum"] {
+								step.Detail = fmt.Sprintf("%s is below the configured minimum of %s → %s.", native(r, s.Values["before"]), native(r, s.Values["minimum"]), native(r, s.Values["candidate"]))
+							}
 						}
 
 						card.Steps = append(card.Steps, step)
@@ -231,6 +248,9 @@ func Build(run runstore.Run, row runstore.Row) Document {
 				}
 			} else {
 				card.Reason += " Per-setting decision trace was not recorded."
+			}
+			if a != nil && a.OOMAdjustment != nil {
+				card.Steps = append([]Step{{Rule: "OOM increase", Detail: oomCalculation(a, row.Scan.Analysis.EffectivePolicy.Memory.OOMKilledCoefficient)}}, card.Steps...)
 			}
 			if why := row.Scan.SuppressedResources[r]; why != "" {
 				card.Outcome = "suppressed"
@@ -242,6 +262,9 @@ func Build(run runstore.Run, row runstore.Row) Document {
 			q := a.DataQuality
 			p := row.Scan.Analysis.EffectivePolicy.Evidence
 			evidence := Resource{Name: string(r), Status: string(q.Status), Quality: fmt.Sprintf("History %.2fh / required %.2fh · observations %d / required %d · coverage %.1f%% / required %.1f%% · %d samples across %d series. Observed %s — %s. Freshness threshold %ds.", q.ObservedIntervalHours, float64(p.MinimumHistorySeconds)/3600, q.ObservationCount, p.MinimumSamples, 100*q.Coverage, 100*p.MinimumCoverage, q.SampleCount, q.SeriesCount, instant(q.ObservedStart), instant(q.ObservedEnd), p.FreshnessSeconds), Inventory: fmt.Sprintf("Inventory available: %t · eligible %d · observed %d · excluded %d", a.Evidence.Inventory.Available, a.Evidence.Inventory.Eligible, a.Evidence.Inventory.Observed, a.Evidence.Inventory.Excluded)}
+			if oomOnly(a) {
+				evidence.Quality = fmt.Sprintf("OOM-based sizing: usage history, sample count, coverage, and usage freshness were not required. Recorded usage: %.2fh · %d observations · %.1f%% coverage · %d samples across %d series. Missing usage is not an observed zero.", q.ObservedIntervalHours, q.ObservationCount, 100*q.Coverage, q.SampleCount, q.SeriesCount)
+			}
 			if a.DecisionTrace != nil {
 				evidence.Source = sourceText(a.DecisionTrace.Source)
 				for _, attempt := range a.DecisionTrace.Fallbacks {
@@ -294,9 +317,17 @@ func Build(run runstore.Run, row runstore.Row) Document {
 	d.SetQueries(row, cfg)
 	technical, _ := json.MarshalIndent(row, "", "  ")
 	d.Technical = string(technical)
+	d.OOMEvents = savedOOMEvents(row)
+	if len(d.OOMEvents) > 0 {
+		d.ChartStatus = "Saved OOM events and allocation reference lines. Usage samples have not been fetched."
+		d.setCharts(row, strategy.Metrics{WindowStart: row.WindowStart, EvaluationTime: row.EvaluationTime})
+	}
 	return d
 }
 func sourceText(s analysis.UsageSource) string {
+	if s.Method == "OOM kill" {
+		return fmt.Sprintf("OOMKilled event · current rollout %s · %s", s.Release, instant(s.Timestamp))
+	}
 	text := s.Method
 	if s.Percentile > 0 {
 		text += fmt.Sprintf(" (P%g)", s.Percentile)
@@ -328,7 +359,7 @@ func reasonText(r analysis.Reason) string {
 		analysis.ReasonIncompleteInventory:   "Freshly observed pods do not cover the eligible inventory; reductions are blocked.",
 		analysis.ReasonExcludedContainers:    "Some containers were excluded; reductions are blocked.",
 		analysis.ReasonOOMKillDetected:       "OOM kills were observed in the selected evidence window.",
-		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit; conservative sizing applies.",
+		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit; fallback sizing applies and reductions are blocked.",
 		analysis.ReasonPreviousReleaseUsage:  "An earlier rollout supplies the sizing usage.",
 	}
 	if text, ok := messages[r]; ok {
@@ -371,7 +402,6 @@ func (d Document) Text(detailed bool) string {
 }
 
 func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnings []string) {
-	d.Charts = nil
 	d.RetrievedAt = time.Now().UTC().Format(time.RFC3339)
 	d.Warnings = append(d.Warnings, warnings...)
 	digest, err := runstore.MetricsDigest(metrics)
@@ -383,6 +413,14 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 			d.ChartStatus = "Changed or incomplete: retrieved observations differ from the saved scan. The original decision is preserved."
 		}
 	}
+	if len(metrics.CPU) == 0 && len(metrics.Memory) == 0 && len(d.OOMEvents) > 0 {
+		d.ChartStatus = "No historical usage samples returned. Saved OOM events and allocation reference lines are shown. The original decision is preserved."
+	}
+	d.setCharts(row, metrics)
+}
+
+func (d *Document) setCharts(row runstore.Row, metrics strategy.Metrics) {
+	d.Charts = nil
 	for _, r := range model.ResourceTypes {
 		chart := Chart{Resource: string(r), Unit: "MiB"}
 		scale := 1.0 / (1024 * 1024)
@@ -391,6 +429,8 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 			chart.Unit = "mCPU"
 			scale = 1
 			rows = metrics.CPU
+		} else {
+			chart.Events = append(chart.Events, savedOOMEvents(row)...)
 		}
 		sizingRelease := ""
 		if row.Scan.Analysis != nil {
@@ -401,12 +441,12 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 				if a.DecisionTrace != nil {
 					sizingRelease = a.DecisionTrace.Source.Release
 				}
-				if a.Evidence.AggregatedUsage.Available {
+				if a.Evidence.AggregatedUsage.Available && !oomOnly(&a) {
 					chart.Lines = append(chart.Lines, Line{Label: "Saved sizing aggregate", Value: a.Evidence.AggregatedUsage.Value * scale, Style: "aggregate"})
 					chart.Events = append(chart.Events, Event{Time: a.Evidence.AggregatedUsage.Timestamp, Label: "Saved sizing sample", Kind: "sizing"})
 				}
-				for _, oom := range a.Evidence.OOMKills {
-					chart.Events = append(chart.Events, Event{Time: oom.Timestamp, Label: "OOM kill", Kind: "oom"})
+				if a.OOMAdjustment != nil {
+					chart.Lines = append(chart.Lines, Line{Label: "OOM floor before bounds", Value: a.OOMAdjustment.OOMRequestFloorBytes * scale, Style: "oom"})
 				}
 			}
 		}
@@ -460,7 +500,9 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 				}
 			}
 		}
-		d.Charts = append(d.Charts, chart)
+		if len(chart.Series) > 0 || len(chart.Lines) > 0 || r == model.Memory && len(d.OOMEvents) > 0 {
+			d.Charts = append(d.Charts, chart)
+		}
 	}
 }
 func medianCadence(points []analysis.Sample) float64 {

@@ -111,6 +111,7 @@ func TestPeakReductionAndGaps(t *testing.T) {
 		t.Fatalf("gap bridged: %v", got)
 	}
 }
+
 func TestUnsetInitializationExplanation(t *testing.T) {
 	run, row, metrics := fixture(t)
 	object := row.Scan.Object
@@ -143,7 +144,6 @@ func TestUnsetInitializationExplanation(t *testing.T) {
 		}
 	}
 }
-
 func TestHTMLSafeAndStandalone(t *testing.T) {
 	run, row, metrics := fixture(t)
 	attack := "</script><script>alert('unsafe')</script>"
@@ -176,15 +176,21 @@ func TestVisualFixtures(t *testing.T) {
 	run, row, metrics := fixture(t)
 	d := Build(run, row)
 	d.AddMetrics(row, metrics, nil)
-	for _, name := range []string{"rich", "offline"} {
-		if name == "offline" {
-			d.Charts = nil
-			d.ChartStatus = "Charts unavailable: historical data has expired."
+	for _, name := range []string{"rich", "offline", "oom-only"} {
+		switch name {
+		case "offline":
+			d = Build(run, row)
+			d.ChartStatus = "Offline: usage samples unavailable. Saved OOM events and reference lines remain visible."
+		case "oom-only":
+			oomRun, oomRow, _ := oomFixture(t)
+			d = Build(oomRun, oomRow)
+			d.ChartStatus = "Offline: saved OOM events and reference lines; no usage samples were required."
 		}
 		data, err := HTML(d)
 		if err != nil {
 			t.Fatal(err)
 		}
+		// #nosec G703 -- Explicit opt-in export directory; filenames are fixed fixture names.
 		if err = os.WriteFile(filepath.Join(dir, name+".html"), data, 0600); err != nil {
 			t.Fatal(err)
 		}

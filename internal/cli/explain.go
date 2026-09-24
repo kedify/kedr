@@ -58,7 +58,7 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 		d := explain.Build(run, row)
 		d.SetQueries(row, cfg)
 		if format == "text" || offline {
-			d.ChartStatus = "Offline: chart samples were not saved. The original decision evidence is available below."
+			d.ChartStatus = "Offline: usage samples were not saved. Saved OOM events and reference lines are shown when available; the original decision evidence remains below."
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), "Fetching historical chart data for the saved scan window…")
 			metrics, warnings, fetchErr := explain.Fetch(cmd.Context(), row, cfg)
@@ -67,6 +67,9 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 			}
 			if fetchErr != nil {
 				d.ChartStatus = "Charts unavailable: " + fetchErr.Error()
+				if len(d.OOMEvents) > 0 {
+					d.ChartStatus = "Usage samples unavailable: " + fetchErr.Error() + ". Saved OOM events and allocation reference lines remain visible."
+				}
 				d.Warnings = append(d.Warnings, warnings...)
 			} else {
 				d.AddMetrics(row, metrics, warnings)
