@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,7 +46,7 @@ func Render(value model.Report, cfg *config.Config, color bool) (string, error) 
 	case "html":
 		return renderHTML(value, cfg)
 	default:
-		return renderTable(value, cfg, color), nil
+		return renderTable(value, cfg, color && !cfg.NoColor && os.Getenv("NO_COLOR") == ""), nil
 	}
 }
 
@@ -221,6 +222,10 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		t = t.Width(*cfg.Width)
 	}
 	if color {
+		diffColors := []diffColorScale{
+			newDiffColorScale(report.Scans, visible, model.CPU),
+			newDiffColorScale(report.Scans, visible, model.Memory),
+		}
 		t = t.StyleFunc(func(row, col int) lipgloss.Style {
 			style := lipgloss.NewStyle()
 			if row == liptable.HeaderRow {
@@ -228,6 +233,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			}
 			if col > 0 && col < firstResourceColumn {
 				return style.Foreground(lipgloss.Color("#00afaf"))
+			}
+			if row >= 0 && row < len(visible) && col >= firstResourceColumn && col < lastResourceColumn && (col-firstResourceColumn)%3 == 0 {
+				return diffColors[(col-firstResourceColumn)/3].style(row)
 			}
 			return style
 		})

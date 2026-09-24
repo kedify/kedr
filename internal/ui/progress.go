@@ -30,8 +30,8 @@ type Progress struct {
 }
 
 // StartProgress starts a progress renderer when enabled.
-func StartProgress(total int, enabled bool) *Progress {
-	return startProgress(total, enabled, colorprofile.NewWriter(os.Stderr, os.Environ()))
+func StartProgress(total int, enabled, noColor bool) *Progress {
+	return startProgress(total, enabled, &colorprofile.Writer{Forward: os.Stderr, Profile: ColorProfile(os.Stderr, noColor)})
 }
 
 func startProgress(total int, enabled bool, out io.Writer) *Progress {

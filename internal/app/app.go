@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/kedify/kedr/internal/config"
@@ -107,7 +109,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if cfg.Verbose {
 		log.Infof("Calculating recommendations")
 	}
-	progress := ui.StartProgress(allObjects, !cfg.Quiet && !cfg.Verbose && isTerminal(os.Stderr))
+	progress := ui.StartProgress(allObjects, !cfg.Quiet && !cfg.Verbose && ui.IsTerminal(os.Stderr), cfg.NoColor)
 	defer progress.Stop()
 	group, groupCtx := errgroup.WithContext(ctx)
 	var mu sync.Mutex
@@ -166,7 +168,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	progress.Stop()
-	progress = ui.StartProgress(0, false)
+	progress = ui.StartProgress(0, false, cfg.NoColor)
 	if len(scans) == 0 {
 		return errors.New("no successful scans were made")
 	}
@@ -178,12 +180,13 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	result := model.Report{Scans: scans, Resources: []string{"cpu", "memory"}, Description: description, Strategy: model.StrategyData{Name: cfg.Strategy, Settings: cfg.OtherArgs}, Errors: reportErrors, ClusterSummary: summary, Config: cfg}
 	result.CalculateScore()
-	color := isTerminal(os.Stdout) && cfg.Format == "table"
+	output := &colorprofile.Writer{Forward: os.Stdout, Profile: ui.ColorProfile(os.Stdout, cfg.NoColor)}
+	color := output.Profile >= colorprofile.ANSI && cfg.Format == "table"
 	rendered, err := report.Render(result, cfg, color)
 	if err != nil {
 		return err
 	}
-	if _, err = fmt.Fprintln(os.Stdout, rendered); err != nil {
+	if _, err = fmt.Fprintln(output, rendered); err != nil {
 		return fmt.Errorf("write report: %w", err)
 	}
 	if cfg.FileOutputDynamic || cfg.FileOutput != nil {
@@ -193,7 +196,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		} else {
 			name = *cfg.FileOutput
 		}
-		if err = os.WriteFile(filepath.Clean(name), []byte(rendered), 0o600); err != nil {
+		fileRendered := rendered
+		if cfg.Format == "table" {
+			fileRendered = ansi.Strip(fileRendered)
+		}
+		if err = os.WriteFile(filepath.Clean(name), []byte(fileRendered), 0o600); err != nil {
 			return fmt.Errorf("write report: %w", err)
 		}
 		log.Infof("Wrote report to %s", name)
@@ -236,11 +243,6 @@ func description(cfg *config.Config) string {
 		description += "\nHPA-managed resources are suppressed in the report; --allow-hpa overrides this. Raw analysis remains available for auditing."
 	}
 	return description
-}
-
-var isTerminal = func(file *os.File) bool {
-	info, err := file.Stat()
-	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
 }
 
 // Length-prefixed components prevent collisions in multi-cluster row mapping.

@@ -44,6 +44,7 @@ func isParseError(err error) bool {
 func NewRoot() *cobra.Command {
 	root := &cobra.Command{Use: "kedr", Short: "Kubernetes resource recommendation CLI", Long: "KEDR analyzes Kubernetes workload usage and recommends CPU and memory requests and limits.", SilenceErrors: true, SilenceUsage: true}
 	root.CompletionOptions.DisableDefaultCmd = true
+	root.PersistentFlags().Bool("no-color", false, "Disable all terminal colors")
 	root.SetGlobalNormalizationFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
 		return pflag.NormalizedName(strings.ReplaceAll(name, "_", "-"))
 	})
@@ -144,6 +145,7 @@ func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 }
 
 func applyPointers(cmd *cobra.Command, cfg *config.Config, b *bindings) {
+	cfg.NoColor, _ = cmd.Flags().GetBool("no-color")
 	setString := func(name string, value string, target **string) {
 		if cmd.Flags().Changed(name) {
 			v := value

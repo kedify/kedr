@@ -78,6 +78,7 @@ type Config struct {
 	Format                    string            `json:"format" yaml:"format"`
 	Explain                   bool              `json:"-" yaml:"-"`
 	Full                      bool              `json:"-" yaml:"-"`
+	NoColor                   bool              `json:"-" yaml:"-"`
 	ShowClusterName           bool              `json:"show_cluster_name" yaml:"show_cluster_name"`
 	Strategy                  string            `json:"strategy" yaml:"strategy"`
 	LogToStderr               bool              `json:"log_to_stderr" yaml:"log_to_stderr"`

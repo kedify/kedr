@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/kedify/kedr/internal/config"
+	"github.com/spf13/cobra"
 )
 
 func execute(args ...string) (string, error) {
@@ -20,7 +23,7 @@ func TestHelpAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain", "--full"} {
+	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain", "--full", "--no-color"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help missing %s", flag)
 		}
@@ -46,6 +49,30 @@ func TestRolloutEvidenceDefaults(t *testing.T) {
 		}
 		if flag := cmd.Flags().Lookup("history-duration-hours"); flag == nil || flag.DefValue != "48" {
 			t.Fatal("history-duration-hours should default to 48 hours")
+		}
+	}
+}
+
+func TestNoColorFlag(t *testing.T) {
+	for _, name := range []string{"simple", "simple_limit"} {
+		for _, args := range [][]string{{"--no-color", name}, {name, "--no-color"}} {
+			root := NewRoot()
+			cmd, _, err := root.Find([]string{name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+				cfg := config.Default(name)
+				applyPointers(cmd, cfg, &bindings{})
+				if !cfg.NoColor {
+					t.Fatal("no-color flag was not applied to the scan configuration")
+				}
+				return nil
+			}
+			root.SetArgs(args)
+			if err := root.Execute(); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
