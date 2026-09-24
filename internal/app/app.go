@@ -49,11 +49,18 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	allObjects := 0
 	reportErrors := []map[string]any{}
 	for _, cluster := range clusters {
+		contextName := "in-cluster"
+		if cluster.Name != nil {
+			contextName = *cluster.Name
+		}
+		log.Debugf("Kubernetes context: %s", contextName)
 		endpoint := ""
+		endpointSource := "--prometheus-url"
 		autoDiscovered := cfg.PrometheusURL == nil
 		if cfg.PrometheusURL != nil {
 			endpoint = *cfg.PrometheusURL
 		} else {
+			endpointSource = "auto-discovered"
 			started := time.Now()
 			endpoint, err = kube.DiscoverMetricsURL(ctx, cluster)
 			if err != nil {
@@ -61,6 +68,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			}
 			log.Debugf("Metrics endpoint discovery: %s", time.Since(started).Round(time.Millisecond))
 		}
+		log.Debugf("Prometheus URL: %s (%s)", logging.SafeURL(endpoint), endpointSource)
 		pc, createErr := prom.New(ctx, cfg, endpoint, log)
 		if createErr != nil {
 			return createErr

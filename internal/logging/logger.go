@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +18,18 @@ type Logger struct {
 	out                  io.Writer
 	verbose, quiet, json bool
 	mu                   sync.Mutex
+}
+
+// SafeURL keeps the endpoint visible without logging URL credentials or parameters.
+func SafeURL(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "[invalid URL]"
+	}
+	u.User = nil
+	u.RawQuery, u.Fragment, u.RawFragment = "", "", ""
+	u.ForceQuery = false
+	return u.String()
 }
 
 func New(cfg *config.Config) *Logger {
