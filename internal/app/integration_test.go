@@ -193,3 +193,61 @@ func TestSavedRowKeyIncludesAllIdentityComponents(t *testing.T) {
 		keys[key] = true
 	}
 }
+
+func TestOOMKilledPodWithoutMetrics(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "memory-leak", Namespace: "keda", UID: "failed-pod", CreationTimestamp: metav1.NewTime(now.Add(-time.Hour))},
+		Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{Name: "memory-leak", Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("50Mi")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("50Mi")},
+		}}}},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{Name: "memory-leak", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", FinishedAt: metav1.NewTime(now.Add(-5 * time.Minute))}}}}},
+	}
+	for _, name := range []string{"simple", "simple_limit"} {
+		cfg := config.Default(name)
+		cfg.NamespaceValues, cfg.ResourceValues = []string{"keda"}, []string{"Pod"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		loader := kube.NewLoader(cfg)
+		clients := kube.Clients{Typed: fake.NewSimpleClientset(pod)}
+		objects, err := loader.List(context.Background(), clients)
+		if err != nil || len(objects) != 1 {
+			t.Fatalf("discover failed standalone pod: %v %v", objects, err)
+		}
+		object, err := loader.Observe(context.Background(), clients, objects[0])
+		if err != nil || object.CurrentPods() != 0 || object.DeletedPods() != 1 || len(object.OOMKills) != 1 {
+			t.Fatalf("observe OOM: %+v %v", object, err)
+		}
+		metrics := strategy.Metrics{WindowStart: now.Add(-48 * time.Hour).UnixMilli(), EvaluationTime: time.Now().UnixMilli()}
+		for _, tc := range []struct {
+			enabled bool
+			minimum int
+			buffer  float64
+			wantMi  float64
+		}{{false, 100, 50, 0}, {true, 100, 50, 100}, {true, 10, 50, 75}, {true, 10, 25, 62.5}} {
+			cfg.UseOOMKillData, cfg.MemoryMinValue, cfg.OOMMemoryBuffer = tc.enabled, tc.minimum, tc.buffer
+			result, err := strategy.Run(cfg, metrics, object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scan := recommend.Scan(object, result)
+			for _, value := range []model.MaybeValue{scan.Recommended.Requests[model.Memory].Value, scan.Recommended.Limits[model.Memory].Value} {
+				if tc.enabled && (!value.Set || value.Unknown || value.Value != tc.wantMi*1024*1024) || !tc.enabled && !value.Unknown {
+					t.Fatalf("%s, %+v: wrong OOM recommendation: %+v", name, tc, value)
+				}
+			}
+			if !scan.Recommended.Requests[model.CPU].Value.Unknown {
+				t.Fatal("OOM must not authorize CPU sizing without metrics")
+			}
+			text, err := report.Render(model.Report{Scans: []model.Scan{scan}}, cfg, true)
+			if err != nil || strings.Contains(text, "Yes (5m ago)") != tc.enabled {
+				t.Fatalf("OOM table: %s, %v", text, err)
+			}
+			if tc.enabled && tc.wantMi == 100 && !strings.Contains(text, "+50Mi") {
+				t.Fatalf("failed OOM pod must show its per-container memory increase: %s", text)
+			}
+		}
+	}
+}

@@ -71,12 +71,12 @@ func TestDecisionAndVerification(t *testing.T) {
 	if d.Cards[1].Outcome != "disabled" || !strings.Contains(d.Cards[1].Reason, "preserved") {
 		t.Fatal("simple CPU limit must be explained as preserved")
 	}
-	if d.Cards[2].Recommended != "368Mi" {
+	if d.Cards[2].Recommended != "384Mi" {
 		t.Fatalf("memory recommendation: %s", d.Cards[2].Recommended)
 	}
 	metrics.Memory[0].Samples[219].Value *= 2
 	d.AddMetrics(row, metrics, nil)
-	if !strings.Contains(d.ChartStatus, "Changed") || d.Cards[2].Recommended != "368Mi" {
+	if !strings.Contains(d.ChartStatus, "Changed") || d.Cards[2].Recommended != "384Mi" {
 		t.Fatal("fresh metrics replaced saved decision")
 	}
 	row.Scan.SuppressedResources = map[model.ResourceType]string{model.CPU: "HPA detected"}

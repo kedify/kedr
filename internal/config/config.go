@@ -170,7 +170,7 @@ func Default(strategy string) *Config {
 		ReleaseHistory:         analysis.MaxPreviousReleases + 1,
 		MemoryBufferPercent:    15,
 		PointsRequired:         analysis.DefaultPolicy().Evidence.MinimumSamples,
-		OOMMemoryBuffer:        25,
+		OOMMemoryBuffer:        50,
 	}
 }
 

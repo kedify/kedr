@@ -41,7 +41,7 @@ func TestAnalyzerPolicyMapping(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if policy.Memory.LeakDetection == nil || policy.Memory.OOMKilledCoefficient != 1.25 || policy.Memory.LimitsToRequestsRatio != 1 || policy.Evidence.MinimumHistorySeconds != 3600 || policy.Evidence.MinimumSamples != 30 || policy.CPU.RequestsOnly != (name == "simple") {
+		if policy.Memory.LeakDetection == nil || policy.Memory.OOMKilledCoefficient != 1.5 || policy.Memory.LimitsToRequestsRatio != 1 || policy.Evidence.MinimumHistorySeconds != 3600 || policy.Evidence.MinimumSamples != 30 || policy.CPU.RequestsOnly != (name == "simple") {
 			t.Fatalf("wrong policy: %+v", policy)
 		}
 		cfg.HistoryDuration = 24

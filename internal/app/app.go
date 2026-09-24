@@ -234,7 +234,7 @@ func description(cfg *config.Config) string {
 	}
 	description := fmt.Sprintf("[b]Kedify Recommender — %s[/b]\n\nCPU request: per-series nearest-rank P%g, maximum across replicas; limit: %s\nMemory: selected-release peak + %g%%; request/limit ratio 1\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\nRetain up to %d rollouts: use current usage, falling back through at most three previous rollouts when history or samples are insufficient.\nShared analyzer history, coverage, freshness, inventory and material-change guards apply.", cfg.Strategy, percentile, limit, cfg.MemoryBufferPercent, cfg.HistoryDuration, cfg.MinimumHistoryHours, cfg.ReleaseHistory)
 	if cfg.UseOOMKillData {
-		description += "\nOOMKilled observations are included; unknown event-time limits use the analyzer's conservative fallback."
+		description += "\nCurrent-rollout OOM kills can trigger memory increases without usage history; unknown event-time limits fall back to current memory settings."
 	}
 	if cfg.DetectMemoryLeaks {
 		description += "\nPotential memory-leak detection is enabled (advisory; does not change sizing)."

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	liptable "charm.land/lipgloss/v2/table"
@@ -110,6 +111,16 @@ func tableTransition(current model.MaybeValue, recommended model.RecommendationV
 	return transition(current, recommended, false, format)
 }
 
+func tableDiffMultiplier(scan model.Scan, kind model.ResourceType) int {
+	pods := scan.Object.CurrentPods()
+	// A failed OOM pod can have a useful recommendation with no current pods.
+	// Show its per-container memory change instead of multiplying it by zero.
+	if pods == 0 && kind == model.Memory && latestOOM(scan) > 0 {
+		return 1
+	}
+	return pods
+}
+
 func legacyQuantity(model.ResourceType) func(float64) string { return resource.Format }
 
 func headers(cfg *config.Config, raw bool) []string {
@@ -168,7 +179,8 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	clusters := map[string]bool{}
 	visible := make([]int, 0, len(report.Scans))
 	for i, s := range report.Scans {
-		if !cfg.Full && !hasTableChange(s) {
+		hasOOM := cfg.UseOOMKillData && latestOOM(s) > 0
+		if !cfg.Full && !hasTableChange(s) && !hasOOM {
 			continue
 		}
 		visible = append(visible, i)
@@ -186,6 +198,10 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		h = append(h, r+" Diff", r+" Requests", r+" Limits")
 	}
 	lastResourceColumn := len(h)
+	if cfg.UseOOMKillData {
+		h = append(h, "OOMKilled")
+	}
+	now := time.Now()
 	rows := make([][]string, 0, len(visible))
 	for _, i := range visible {
 		scan := report.Scans[i]
@@ -204,11 +220,14 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			current := scan.Object.Allocations.Requests[r]
 			recommended := scan.Recommended.Requests[r]
 			request := tableTransition(current, recommended, format)
-			change := diff(current, recommended, scan.Object.CurrentPods(), format)
+			change := diff(current, recommended, tableDiffMultiplier(scan, r), format)
 			if request == "" || (!current.Set && !current.Unknown && recommended.Value.Set && !recommended.Value.Unknown) {
 				change = ""
 			}
 			row = append(row, change, request, tableTransition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], format))
+		}
+		if cfg.UseOOMKillData {
+			row = append(row, oomCell(latestOOM(scan), now))
 		}
 		rows = append(rows, row)
 	}
@@ -257,7 +276,7 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
 		}
 	}
-	return table + "\nDiff columns: total request change across current pods. Requests and limits are per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+	return table + "\nDiff columns: total request change across current pods. Requests and limits are per container. OOM rows with no current pods show the per-container memory change. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
 }
 
 func hasTableChange(scan model.Scan) bool {

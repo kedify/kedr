@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
+	"github.com/kedify/recommender/analysis"
 )
 
 func TestTableDiffColors(t *testing.T) {
@@ -21,6 +22,7 @@ func TestTableDiffColors(t *testing.T) {
 		pods           int
 		unset          bool
 		unknownCurrent bool
+		oom            bool
 	}{
 		{name: "small-save", cpu: -.01, memory: -500 * mi, pods: 1},
 		{name: "medium-save", cpu: -.5, memory: -300 * mi, pods: 1},
@@ -31,12 +33,16 @@ func TestTableDiffColors(t *testing.T) {
 		{name: "unchanged", pods: 1},
 		{name: "rounded-unchanged", cpu: .0000001, memory: 1, pods: 1},
 		{name: "zero-pods", cpu: 100, memory: 10000 * mi},
+		{name: "oom-zero-pods", cpu: 100, memory: 50 * mi, oom: true},
 		{name: "unset", cpu: 100, memory: 10000 * mi, pods: 100, unset: true},
 		{name: "unknown", cpu: 100, memory: 10000 * mi, pods: 100, unknownCurrent: true},
 	} {
 		scan := fixture().Scans[0]
 		scan.Object.Name = row.name
 		scan.Object.Pods = make([]model.Pod, row.pods)
+		if row.oom {
+			scan.Analysis = &analysis.Output{Results: []analysis.ResourceAnalysis{{Resource: analysis.ResourceMemory, Evidence: analysis.ResourceEvidence{OOMKills: []analysis.OOMKill{{Timestamp: 1}}}}}}
+		}
 		for _, entry := range []struct {
 			resource model.ResourceType
 			current  float64
@@ -73,6 +79,7 @@ func TestTableDiffColors(t *testing.T) {
 			{"unchanged", "", ""},
 			{"rounded-unchanged", "", ""},
 			{"zero-pods", "146;146;146", "146;146;146"},
+			{"oom-zero-pods", "146;146;146", "163;152;144"},
 			{"unset", "", ""},
 			{"unknown", "146;146;146", "146;146;146"},
 		} {

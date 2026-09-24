@@ -141,7 +141,7 @@ func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 	f.IntVar(&cfg.PointsRequired, "points-required", cfg.PointsRequired, "Minimum distinct observation times per resource")
 	f.BoolVar(&cfg.AllowHPA, "allow-hpa", false, "Recommend resources managed by an HPA")
 	f.BoolVar(&cfg.UseOOMKillData, "use-oomkill-data", false, "Include OOM-kill history")
-	f.Float64Var(&cfg.OOMMemoryBuffer, "oom-memory-buffer-percentage", 25, "Memory increase percentage after OOMKilled (shared OOMKilledCoefficient)")
+	f.Float64Var(&cfg.OOMMemoryBuffer, "oom-memory-buffer-percentage", cfg.OOMMemoryBuffer, "Memory increase percentage after OOMKilled (shared OOMKilledCoefficient)")
 }
 
 func applyPointers(cmd *cobra.Command, cfg *config.Config, b *bindings) {

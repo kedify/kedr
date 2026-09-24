@@ -180,13 +180,13 @@ func TestInputUnitsSettingsAndOOMOptIn(t *testing.T) {
 	}
 	cfg.UseOOMKillData = true
 	result := run(t, cfg, metrics, object)
-	if result.Resources[model.Memory].Request.Value != 640*testMiB || !strings.Contains(*result.Resources[model.Memory].Info, "oom-kill-detected") {
+	if result.Resources[model.Memory].Request.Value != 768*testMiB || !strings.Contains(*result.Resources[model.Memory].Info, "oom-kill-detected") {
 		t.Fatalf("OOM did not reach analyzer/report: %+v", result)
 	}
-	// Unknown termination-time limit must use the engine's conservative fallback.
+	// Unknown termination-time limits use current settings as an explicit fallback.
 	object.OOMKills[0].MemoryLimitBytes = 0
-	if result = run(t, cfg, metrics, object); result.Resources[model.Memory].Request.Value != 512*testMiB {
-		t.Fatal("unknown failed limit must block downsizing")
+	if result = run(t, cfg, metrics, object); result.Resources[model.Memory].Request.Value != 1536*testMiB {
+		t.Fatal("unknown failed limit must bump the current limit")
 	}
 	// Known absence is distinct from zero; inconsistent settings are unavailable.
 	object.Allocations.Limits[model.CPU] = model.Unset()

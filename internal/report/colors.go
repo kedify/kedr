@@ -43,7 +43,7 @@ func newDiffColorScale(scans []model.Scan, visible []int, kind model.ResourceTyp
 		if current.Unknown || !current.Set || next.Unknown || !next.Set || format(current.Value) == format(next.Value) {
 			continue
 		}
-		change := (next.Value - current.Value) * float64(scan.Object.CurrentPods())
+		change := (next.Value - current.Value) * float64(tableDiffMultiplier(scan, kind))
 		if math.IsNaN(change) || math.IsInf(change, 0) {
 			continue
 		}
