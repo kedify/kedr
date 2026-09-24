@@ -6,7 +6,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"html"
 	"os"
 	"sort"
 	"strconv"
@@ -289,8 +288,39 @@ func alignTableArrows(rows [][]string, col int) {
 	}
 }
 
+// scanNote retains image references separately for rich output. String preserves
+// the plain-text representation used by CSV and terminal reports.
+type scanNote struct {
+	Text   string
+	Image  string
+	Detail string
+}
+
+func (n scanNote) String() string {
+	text := n.Text
+	if n.Image != "" {
+		text += " (" + n.Image + ")"
+	}
+	if n.Detail != "" {
+		text += " [" + n.Detail + "]"
+	}
+	return text
+}
+
 func scanNotes(scan model.Scan, format func(model.ResourceType) func(float64) string) string {
-	parts := append([]string(nil), scan.Object.Warnings...)
+	notes := scanNoteEntries(scan, format)
+	parts := make([]string, len(notes))
+	for i, note := range notes {
+		parts[i] = note.String()
+	}
+	return strings.Join(parts, "; ")
+}
+
+func scanNoteEntries(scan model.Scan, format func(model.ResourceType) func(float64) string) []scanNote {
+	parts := make([]scanNote, 0, len(scan.Object.Warnings)+len(scan.ReleaseComparisons))
+	for _, warning := range scan.Object.Warnings {
+		parts = append(parts, scanNote{Text: warning})
+	}
 	hasSizingSources := false
 	for _, comparison := range scan.ReleaseComparisons {
 		hasSizingSources = hasSizingSources || len(comparison.SizingResources) > 0
@@ -325,43 +355,18 @@ func scanNotes(scan model.Scan, format func(model.ResourceType) func(float64) st
 		if label == "" {
 			label = comparison.Release.ID
 		}
-		if comparison.Release.Image != "" {
-			label += " (" + comparison.Release.Image + ")"
-		}
-		parts = append(parts, fmt.Sprintf("%s: %s [CPU aggregate %s; memory peak %s; memory history %.1fh]", role, label, cpu, memory, comparison.Memory.HistoryHours))
+		parts = append(parts, scanNote{
+			Text:   role + ": " + label,
+			Image:  comparison.Release.Image,
+			Detail: fmt.Sprintf("CPU aggregate %s; memory peak %s; memory history %.1fh", cpu, memory, comparison.Memory.HistoryHours),
+		})
 	}
 	for _, resource := range model.ResourceTypes {
 		if info := scan.Recommended.Info[resource]; info != nil && *info != "" {
-			parts = append(parts, string(resource)+": "+*info)
+			parts = append(parts, scanNote{Text: string(resource) + ": " + *info})
 		}
 	}
-	return strings.Join(parts, "; ")
-}
-
-func renderHTML(report model.Report, cfg *config.Config) (string, error) {
-	csvText, err := renderCSV(report, cfg, false)
-	if err != nil {
-		return "", err
-	}
-	rows, err := csv.NewReader(strings.NewReader(csvText)).ReadAll()
-	if err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>KEDR Report</title><style>body{font-family:system-ui,sans-serif}table{border-collapse:collapse}th,td{border:1px solid #aaa;padding:.35rem;text-align:left}th{background:#eee}</style></head><body><h1>KEDR Report</h1><table>")
-	for i, row := range rows {
-		tag := "td"
-		if i == 0 {
-			tag = "th"
-		}
-		b.WriteString("<tr>")
-		for _, cell := range row {
-			fmt.Fprintf(&b, "<%s>%s</%s>", tag, html.EscapeString(cell), tag)
-		}
-		b.WriteString("</tr>")
-	}
-	fmt.Fprintf(&b, "</table><p>%d points - %s</p></body></html>", report.Score, report.ScoreLetter())
-	return b.String(), nil
+	return parts
 }
 
 func pprint(value model.Report) (string, error) {

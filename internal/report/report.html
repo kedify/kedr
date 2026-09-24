@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>KEDR Report</title>
+<style>
+/* Base palette and typography match the recommendation explanation report. */
+:root{--bg:#f5f7fb;--panel:#fff;--ink:#172334;--muted:#53647a;--line:#dce3ee;--accent:#146f65;--soft:#e6f4ef;--orange:#a84c16;--warning-bg:#fff1e6;--critical:#b42338;--critical-bg:#ffedf0;--shadow:0 8px 28px #15304808;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#0c1420;--panel:#131f2e;--ink:#e8eff8;--muted:#a5b6ca;--line:#2e4055;--accent:#73e1bd;--soft:#173b36;--orange:#ffb887;--warning-bg:#3b2a20;--critical:#ff9aaa;--critical-bg:#41232e;--shadow:none}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif}
+main{max-width:1440px;margin:auto;padding:40px 32px 80px}
+header{padding-bottom:28px;border-bottom:1px solid var(--line);margin-bottom:28px}
+.eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;font-weight:750;color:var(--accent)}
+h1{font-size:clamp(24px,3vw,38px);line-height:1.22;letter-spacing:-.03em;margin:12px 0;overflow-wrap:anywhere}
+.panel{border:1px solid var(--line);background:var(--panel);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+.table-scroll{overflow-x:auto}
+.table-scroll:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;vertical-align:top;padding:16px;border-bottom:1px solid var(--line)}
+th{background:var(--soft);color:var(--accent);font-size:11px;font-weight:750;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--bg)}
+.identity{min-width:9rem;max-width:15rem;overflow-wrap:anywhere}
+.count{font-variant-numeric:tabular-nums;text-align:right}
+code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+.quantity{white-space:nowrap;font-variant-numeric:tabular-nums}
+.badge{display:inline-flex;align-items:center;gap:6px;width:fit-content;font-size:11px;letter-spacing:.05em;border-radius:20px;padding:3px 9px;background:var(--bg);color:var(--muted);font-weight:700;white-space:nowrap}
+.badge.good,.badge.ok{background:var(--soft);color:var(--accent)}
+.badge.warning{background:var(--warning-bg);color:var(--orange)}
+.badge.critical{background:var(--critical-bg);color:var(--critical)}
+.notes{min-width:24rem;max-width:32rem;overflow-wrap:anywhere}
+.notes ul{list-style:none;padding:0;margin:0}
+.notes li+li{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}
+.image{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 6px;box-decoration-break:clone;-webkit-box-decoration-break:clone;white-space:pre-wrap;overflow-wrap:anywhere}
+.detail{display:block;color:var(--muted);font-size:12px;margin-top:6px}
+.empty{padding:40px 24px;text-align:center;color:var(--muted)}
+footer{margin-top:32px;color:var(--muted);font-size:12px}
+footer p{margin:8px 0}
+@media(max-width:640px){main{padding:24px 16px 48px}th,td{padding:12px}.notes{min-width:20rem}}
+@media print{ :root{--bg:#fff;--panel:#fff;--ink:#000;--muted:#444;--line:#ccc;--accent:#146f65;--soft:#e6f4ef;--orange:#a84c16;--warning-bg:#fff1e6;--critical:#b42338;--critical-bg:#ffedf0}main{max-width:none;padding:0}.panel{box-shadow:none;overflow:visible}.table-scroll{overflow:visible}table{font-size:9px;table-layout:fixed}th,td{padding:4px;overflow-wrap:anywhere}th{font-size:8px;white-space:normal}.identity,.notes{min-width:0;max-width:none}.quantity,.badge{white-space:normal}code,.badge,.detail{font-size:8px}.badge{padding:2px}tr{break-inside:avoid}}
+</style>
+</head>
+<body>
+<main>
+<header><div class="eyebrow">KEDR / recommendations</div><h1 id="report-title">KEDR Report</h1></header>
+<div class="panel">
+<div class="table-scroll" role="region" aria-labelledby="report-title" tabindex="0">
+<table aria-labelledby="report-title">
+<thead><tr>{{range .Headers}}<th scope="col">{{.}}</th>{{end}}</tr></thead>
+<tbody>
+{{range .Rows}}
+<tr>
+{{if $.ShowCluster}}<td class="identity">{{if .Object.Cluster}}{{.Object.Cluster}}{{end}}</td>{{end}}
+<td class="identity">{{.Object.Namespace}}</td>
+<td class="identity"><code>{{.Object.Name}}</code></td>
+<td class="count">{{.Object.CurrentPods}}</td>
+<td class="count">{{.Object.DeletedPods}}</td>
+<td>{{.Object.Kind}}</td>
+<td class="identity"><code>{{.Object.Container}}</code></td>
+{{if $.ShowSeverity}}<td><span class="badge {{.Severity.Class}}"><span aria-hidden="true">{{.Severity.Emoji}}</span> {{.Severity.Label}}</span></td>{{end}}
+{{range .Values}}<td class="quantity"><code>{{.}}</code></td>{{end}}
+<td class="notes">{{if .Notes}}<ul>{{range .Notes}}<li>{{.Text}}{{if .Image}} (<code class="image">{{.Image}}</code>){{end}}{{if .Detail}} <span class="detail">[{{.Detail}}]</span>{{end}}</li>{{end}}</ul>{{end}}</td>
+</tr>
+{{else}}
+<tr><td class="empty" colspan="{{len .Headers}}">No recommendations to display.</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</div>
+<footer><p>{{.Score}} points - {{.ScoreLetter}}</p></footer>
+</main>
+</body>
+</html>
