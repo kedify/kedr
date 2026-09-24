@@ -120,7 +120,7 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 	f.StringVar(&b.promAuth, "prometheus-auth-header", "", "Prometheus Authorization header (never saved)")
 	f.StringSliceVarP(&cfg.PrometheusHeadersRaw, "prometheus-headers", "H", nil, "Additional header in 'key: value' form (never saved)")
 	f.BoolVar(&cfg.PrometheusSSLEnabled, "prometheus-ssl-enabled", false, "Verify Prometheus TLS certificates")
-	f.StringVarP(&b.promClusterLabel, "prometheus-cluster-label", "l", "", "Cluster value in centralized Prometheus")
+	f.StringVar(&b.promClusterLabel, "prometheus-cluster-label", "", "Cluster value in centralized Prometheus")
 	f.StringVar(&b.promLabel, "prometheus-label", "", "Label used to differentiate clusters")
 	f.BoolVar(&cfg.EKSManagedProm, "eks-managed-prom", false, "Use Amazon Managed Prometheus SigV4 authentication")
 	f.StringVar(&b.eksProfile, "eks-profile-name", "", "AWS profile name")
