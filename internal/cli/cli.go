@@ -86,7 +86,7 @@ func strategyCommand(name string) *cobra.Command {
 	f.StringSliceVarP(&cfg.NamespaceValues, "namespace", "n", nil, "Namespace or namespace regex to scan (repeatable)")
 	f.StringSliceVarP(&cfg.ResourceValues, "resource", "r", nil, "Resource kind to scan (repeatable)")
 	f.StringVarP(&b.selector, "selector", "l", "", "Workload label selector")
-	f.StringVarP(&b.promURL, "prometheus-url", "p", "", "Prometheus URL")
+	f.StringVarP(&b.promURL, "prometheus-url", "p", "", "Prometheus URL (skip endpoint discovery and selection)")
 	f.StringVar(&b.promAuth, "prometheus-auth-header", "", "Prometheus Authorization header")
 	f.StringSliceVarP(&cfg.PrometheusHeadersRaw, "prometheus-headers", "H", nil, "Additional Prometheus header in 'key: value' form")
 	f.BoolVar(&cfg.PrometheusSSLEnabled, "prometheus-ssl-enabled", false, "Verify Prometheus TLS certificates")

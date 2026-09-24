@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -110,15 +111,15 @@ func TestMetricsDiscoveryUsesOneInventoryPerKind(t *testing.T) {
 		name    string
 		objects []runtime.Object
 		inside  bool
-		want    string
+		want    []string
 	}{
-		{"late selector", []runtime.Object{prometheus}, false, "https://cluster/api/v1/namespaces/monitoring/services/prom:9090/proxy"},
-		{"service priority", []runtime.Object{prometheus, vm}, false, "https://cluster/api/v1/namespaces/monitoring/services/vm:9090/proxy/select/0/prometheus"},
-		{"ingress priority", []runtime.Object{prometheus, ingress}, false, "http://metrics.example"},
-		{"service before matching ingress", []runtime.Object{vm, ingress}, false, "https://cluster/api/v1/namespaces/monitoring/services/vm:9090/proxy/select/0/prometheus"},
-		{"mimir path", []runtime.Object{mimir}, false, "https://cluster/api/v1/namespaces/monitoring/services/mimir:9090/proxy/prometheus"},
-		{"in cluster", []runtime.Object{prometheus, ingress}, true, "http://prom.monitoring.svc.cluster.local:9090"},
-		{"missing", nil, false, ""},
+		{"late selector", []runtime.Object{prometheus}, false, []string{"https://cluster/api/v1/namespaces/monitoring/services/prom:9090/proxy"}},
+		{"all services", []runtime.Object{vm, prometheus, mimir}, false, []string{"https://cluster/api/v1/namespaces/monitoring/services/mimir:9090/proxy/prometheus", "https://cluster/api/v1/namespaces/monitoring/services/prom:9090/proxy", "https://cluster/api/v1/namespaces/monitoring/services/vm:9090/proxy/select/0/prometheus"}},
+		{"services and ingresses", []runtime.Object{prometheus, ingress}, false, []string{"https://cluster/api/v1/namespaces/monitoring/services/prom:9090/proxy", "http://metrics.example/select/0/prometheus"}},
+		{"service and matching ingress", []runtime.Object{vm, ingress}, false, []string{"http://metrics.example/select/0/prometheus", "https://cluster/api/v1/namespaces/monitoring/services/vm:9090/proxy/select/0/prometheus"}},
+		{"mimir path", []runtime.Object{mimir}, false, []string{"https://cluster/api/v1/namespaces/monitoring/services/mimir:9090/proxy/prometheus"}},
+		{"in cluster", []runtime.Object{prometheus, ingress}, true, []string{"http://prom.monitoring.svc.cluster.local:9090"}},
+		{"missing", nil, false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			typed := fake.NewSimpleClientset(tc.objects...)
@@ -127,8 +128,15 @@ func TestMetricsDiscoveryUsesOneInventoryPerKind(t *testing.T) {
 			if !tc.inside {
 				clients.Name = &name
 			}
-			got, err := DiscoverMetricsURL(context.Background(), clients)
-			if got != tc.want || (err != nil) != (tc.want == "") {
+			endpoints, err := DiscoverMetricsEndpoints(context.Background(), clients)
+			got := make([]string, 0, len(endpoints))
+			for _, endpoint := range endpoints {
+				got = append(got, endpoint.URL)
+				if endpoint.Backend == "" || endpoint.Namespace != "monitoring" || endpoint.Name == "" || endpoint.Kind == "" {
+					t.Fatalf("missing endpoint identity: %+v", endpoint)
+				}
+			}
+			if !slices.Equal(got, tc.want) || (err != nil) != (len(tc.want) == 0) {
 				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
 			}
 			counts := map[string]int{}

@@ -63,11 +63,23 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		} else {
 			endpointSource = "auto-discovered"
 			started := time.Now()
-			endpoint, err = kube.DiscoverMetricsURL(ctx, cluster)
+			endpoints, err := kube.DiscoverMetricsEndpoints(ctx, cluster)
 			if err != nil {
 				return err
 			}
 			log.Debugf("Metrics endpoint discovery: %s", time.Since(started).Round(time.Millisecond))
+			options := make([]string, len(endpoints))
+			for i, candidate := range endpoints {
+				options[i] = fmt.Sprintf("%s — %s/%s (%s)\n     %s", candidate.Backend, candidate.Namespace, candidate.Name, candidate.Kind, logging.SafeURL(candidate.URL))
+			}
+			selected, err := ui.ChooseMetricsEndpoint(ctx, contextName, options)
+			if err != nil {
+				return err
+			}
+			endpoint = endpoints[selected].URL
+			if len(endpoints) > 1 {
+				endpointSource = "selected from discovery"
+			}
 		}
 		log.Debugf("Prometheus URL: %s (%s)", logging.SafeURL(endpoint), endpointSource)
 		diagnosticEndpoints[contextName] = logging.SafeURL(endpoint)
@@ -75,7 +87,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if createErr != nil {
 			return createErr
 		}
-		if autoDiscovered && cluster.Name != nil {
+		if cluster.REST != nil && kube.IsMetricsProxyURL(endpoint, cluster.REST.Host) {
 			kubeHTTP, clientErr := kube.KubernetesHTTPClient(cluster)
 			if clientErr != nil {
 				return clientErr

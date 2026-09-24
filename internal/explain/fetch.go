@@ -31,7 +31,8 @@ func Fetch(ctx context.Context, row runstore.Row, cfg *config.Config) (strategy.
 	// A kube transport is required only for the original API proxy. An explicit
 	// replacement endpoint uses explicit authentication, never kube credentials.
 	sameEndpoint := endpoint == row.Connection.Endpoint
-	if sameEndpoint {
+	needsKubeProxy := kube.IsMetricsProxyURL(endpoint, row.Connection.APIServer)
+	if sameEndpoint && (needsKubeProxy || !row.Connection.AutoDiscovered) {
 		var cluster kube.Clients
 		var loadErr error
 		if row.Connection.Context != nil {
@@ -46,10 +47,10 @@ func Fetch(ctx context.Context, row runstore.Row, cfg *config.Config) (strategy.
 		}
 		if loadErr == nil && cluster.REST != nil {
 			if row.Connection.APIServer == "" || runstore.SafeEndpoint(cluster.REST.Host) != row.Connection.APIServer {
-				if row.Connection.AutoDiscovered {
+				if needsKubeProxy {
 					return strategy.Metrics{}, nil, errors.New("saved Kubernetes API server does not match this context; supply --prometheus-url with explicit credentials")
 				}
-			} else if row.Connection.AutoDiscovered {
+			} else if needsKubeProxy {
 				httpClient, e := kube.KubernetesHTTPClient(cluster)
 				if e != nil {
 					return strategy.Metrics{}, nil, errors.New("could not create saved Kubernetes context transport")
@@ -64,7 +65,7 @@ func Fetch(ctx context.Context, row runstore.Row, cfg *config.Config) (strategy.
 				}
 				client.SetBearerToken(token)
 			}
-		} else if row.Connection.AutoDiscovered {
+		} else if needsKubeProxy {
 			return strategy.Metrics{}, nil, errors.New("saved Kubernetes context credentials are unavailable; supply --kubeconfig or an explicit metrics endpoint")
 		}
 	}
