@@ -10,7 +10,7 @@ import (
 func TestValidateDefaultsAndAliases(t *testing.T) {
 	cfg := Default("simple")
 	cfg.NamespaceValues = []string{"Default"}
-	cfg.ResourceValues = []string{"deployment", "ROLLOUT"}
+	cfg.ResourceValues = []string{"deployment", "ROLLOUT", "Pod", "StandalonePod", "Standalone Pod"}
 	cfg.PrometheusHeadersRaw = []string{"X-Tenant: acme"}
 	cfg.JobGroupingRaw = "app, team"
 	if err := cfg.Validate(); err != nil {
@@ -19,7 +19,7 @@ func TestValidateDefaultsAndAliases(t *testing.T) {
 	if got := cfg.NamespaceValues[0]; got != "default" {
 		t.Fatalf("namespace=%q", got)
 	}
-	if got := strings.Join(cfg.ResourceValues, ","); got != "Deployment,Rollout" {
+	if got := strings.Join(cfg.ResourceValues, ","); got != "Deployment,Rollout,Standalone Pod,Standalone Pod,Standalone Pod" {
 		t.Fatalf("resources=%q", got)
 	}
 	if got := cfg.PrometheusOtherHeaders["x-tenant"]; got != "acme" {

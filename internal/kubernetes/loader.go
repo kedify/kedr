@@ -129,6 +129,17 @@ func (l *Loader) List(ctx context.Context, clients Clients) ([]model.Object, err
 	hpas := l.hpas(ctx, clients.Typed)
 	var result []model.Object
 	for _, namespace := range namespaces {
+		if l.enabled(model.StandalonePodKind) {
+			items, e := clients.Typed.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: l.selector()})
+			if e != nil {
+				return nil, e
+			}
+			for i := range items.Items {
+				if isStandalonePod(&items.Items[i]) {
+					result = append(result, l.fromStandalonePod(clients.Name, &items.Items[i])...)
+				}
+			}
+		}
 		if l.enabled("Deployment") {
 			items, e := clients.Typed.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: l.selector()})
 			if e != nil {
@@ -341,6 +352,26 @@ func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector
 	}
 	return out
 }
+func isStandalonePod(pod *corev1.Pod) bool {
+	_, mirror := pod.Annotations[corev1.MirrorPodAnnotationKey]
+	return len(pod.OwnerReferences) == 0 && !mirror
+}
+
+func (l *Loader) fromStandalonePod(cluster *string, pod *corev1.Pod) []model.Object {
+	out := l.objects(cluster, pod.ObjectMeta, model.StandalonePodKind, "", pod.Spec.Containers, nil)
+	for i := range out {
+		// A standalone pod has no rollout controller. Its UID and creation time
+		// delimit its history, including container restarts within that pod.
+		out[i].Release = "pod:" + string(pod.UID)
+		out[i].ObservedGeneration = pod.Generation
+		if !pod.CreationTimestamp.IsZero() {
+			out[i].ReleaseStartedAt = pod.CreationTimestamp.UnixMilli()
+		}
+		out[i].Releases = []model.Release{{ID: out[i].Release, Name: pod.Name, Image: out[i].Image, CreatedAt: out[i].ReleaseStartedAt, Current: true}}
+	}
+	return out
+}
+
 func (l *Loader) fromDeployment(c *string, x *appsv1.Deployment, h map[hpaKey]*model.HPA) []model.Object {
 	out := l.objects(c, x.ObjectMeta, "Deployment", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
 	for i := range out {

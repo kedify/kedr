@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/recommender/analysis"
 )
 
@@ -174,6 +175,7 @@ func Default(strategy string) *Config {
 var supportedResources = map[string]string{
 	"deployment": "Deployment", "statefulset": "StatefulSet", "daemonset": "DaemonSet",
 	"job": "Job", "cronjob": "CronJob", "groupedjob": "GroupedJob", "rollout": "Rollout",
+	"pod": model.StandalonePodKind, "standalonepod": model.StandalonePodKind, "standalone pod": model.StandalonePodKind,
 }
 
 func (c *Config) Validate() error {

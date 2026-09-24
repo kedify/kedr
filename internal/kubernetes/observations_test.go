@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,6 +23,69 @@ import (
 func controller(kind, name, uid string) []metav1.OwnerReference {
 	yes := true
 	return []metav1.OwnerReference{{Kind: kind, Name: name, UID: types.UID(uid), Controller: &yes}}
+}
+
+func TestObserveStandalonePod(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "shell", Namespace: "ns", UID: "pod-uid", Generation: 2, CreationTimestamp: metav1.NewTime(now.Add(-4 * time.Hour))},
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "busybox:1", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")}}}, {Name: "sidecar"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "main", RestartCount: 5, ContainerID: "containerd://current", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-30 * time.Minute))}}, LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", FinishedAt: metav1.NewTime(now.Add(-time.Hour))}}}}},
+	}
+	loader := NewLoader(config.Default("simple"))
+	object := loader.fromStandalonePod(nil, pod)[0]
+	// Observe must use the current pod allocation, not an earlier discovery value.
+	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("50m")
+	neighbor := pod.DeepCopy()
+	neighbor.Name, neighbor.UID = "unrelated", "other-uid"
+	client := fake.NewSimpleClientset(pod, neighbor)
+	got, err := loader.Observe(context.Background(), Clients{Typed: client}, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.InventoryAvailable || got.IdentityAmbiguous || got.CurrentPods() != 1 || got.DeletedPods() != 0 || got.UID != string(pod.UID) || got.ReleaseStartedAt != pod.CreationTimestamp.UnixMilli() {
+		t.Fatalf("standalone pod identity or inventory lost: %+v", got)
+	}
+	observed := got.Pods[0]
+	if observed.Name != pod.Name || observed.UID != got.UID || observed.Release != got.Release || observed.ContainerID != "containerd://current" || observed.ContainerStartedAt != now.Add(-30*time.Minute).UnixMilli() {
+		t.Fatalf("pod/container lifetimes not preserved: %+v", observed)
+	}
+	if got.Allocations.Requests[model.CPU].Value != .05 || observed.Allocations.Requests[model.CPU] != got.Allocations.Requests[model.CPU] || len(got.Releases) != 1 || !got.Releases[0].Current {
+		t.Fatalf("current allocations or release metadata lost: %+v", got)
+	}
+	if len(got.OOMKills) != 1 || got.OOMKills[0].PodUID != got.UID || got.OOMKills[0].WorkloadUID != got.UID || got.OOMKills[0].Release != got.Release {
+		t.Fatalf("OOM evidence lost: %+v", got.OOMKills)
+	}
+	if actions := client.Actions(); len(actions) != 1 || actions[0].GetVerb() != "get" || actions[0].GetResource().Resource != "pods" {
+		t.Fatalf("standalone observation queried unrelated resources: %+v", actions)
+	}
+}
+
+func TestObserveStandalonePodRejectsChangedIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*corev1.Pod)
+	}{
+		{"recreated", func(p *corev1.Pod) { p.UID = "replacement-uid" }},
+		{"adopted", func(p *corev1.Pod) { p.OwnerReferences = controller("ReplicaSet", "owner", "owner-uid") }},
+		{"mirror", func(p *corev1.Pod) { p.Annotations = map[string]string{corev1.MirrorPodAnnotationKey: "hash"} }},
+		{"missing container", func(p *corev1.Pod) { p.Spec.Containers = nil }},
+		{"deleted", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "shell", Namespace: "ns", UID: "original-uid", CreationTimestamp: metav1.Now()}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}}}
+			loader := NewLoader(config.Default("simple"))
+			object := loader.fromStandalonePod(nil, pod)[0]
+			client := fake.NewSimpleClientset()
+			if tc.change != nil {
+				tc.change(pod)
+				client = fake.NewSimpleClientset(pod)
+			}
+			got, err := loader.Observe(context.Background(), Clients{Typed: client}, object)
+			if err == nil || got.InventoryAvailable || len(got.Pods) != 0 || got.UID != object.UID {
+				t.Fatalf("changed/missing pod was trusted: %+v, %v", got, err)
+			}
+		})
+	}
 }
 
 func TestObserveChecksOwnerNameAndSelectsCurrentRelease(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -33,6 +34,29 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 	object.InventoryAvailable = false
 	if object.UID == "" {
 		return object, nil
+	}
+	var standalone *corev1.Pod
+	if object.Kind == model.StandalonePodKind {
+		pod, err := clients.Typed.CoreV1().Pods(object.Namespace).Get(ctx, object.Name, metav1.GetOptions{})
+		if err != nil {
+			return object, fmt.Errorf("read standalone pod: %w", err)
+		}
+		if string(pod.UID) != object.UID || !isStandalonePod(pod) {
+			object.IdentityAmbiguous = true
+			return object, errors.New("standalone pod identity or ownership changed since discovery")
+		}
+		// Refresh allocations and identity together from this exact pod. Never
+		// use a label selector to adopt similarly labelled or recreated pods.
+		for _, fresh := range l.fromStandalonePod(object.Cluster, pod) {
+			if fresh.Container == object.Container {
+				object, standalone = fresh, pod
+				break
+			}
+		}
+		if standalone == nil {
+			object.IdentityAmbiguous = true
+			return object, fmt.Errorf("standalone pod container %q no longer exists", object.Container)
+		}
 	}
 	if object.Generation > object.ObservedGeneration {
 		object.IdentityAmbiguous = true
@@ -95,20 +119,30 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 	default:
 		owners[object.UID] = object.Release
 	}
-	items, err := clients.Typed.CoreV1().Pods(object.Namespace).List(ctx, metav1.ListOptions{LabelSelector: object.Selector})
-	if err != nil {
-		return object, fmt.Errorf("read pod identities: %w", err)
+	var items []corev1.Pod
+	if standalone != nil {
+		items = []corev1.Pod{*standalone}
+	} else {
+		listed, err := clients.Typed.CoreV1().Pods(object.Namespace).List(ctx, metav1.ListOptions{LabelSelector: object.Selector})
+		if err != nil {
+			return object, fmt.Errorf("read pod identities: %w", err)
+		}
+		items = listed.Items
 	}
 	object.InventoryAvailable = true
 	currentReleases := map[string]bool{}
-	for _, pod := range items.Items {
-		owner := metav1.GetControllerOf(&pod)
-		if owner == nil || owner.Kind != ownerKind {
-			continue
-		}
-		release, owned := owners[string(owner.UID)]
-		if !owned {
-			continue
+	for _, pod := range items {
+		release := object.Release
+		if standalone == nil {
+			owner := metav1.GetControllerOf(&pod)
+			if owner == nil || owner.Kind != ownerKind {
+				continue
+			}
+			var owned bool
+			release, owned = owners[string(owner.UID)]
+			if !owned {
+				continue
+			}
 		}
 		if object.Kind == "StatefulSet" || object.Kind == "DaemonSet" {
 			if hash := pod.Labels["controller-revision-hash"]; hash != "" {

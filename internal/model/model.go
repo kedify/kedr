@@ -20,6 +20,9 @@ const (
 
 var ResourceTypes = []ResourceType{CPU, Memory}
 
+// StandalonePodKind identifies ownerless API pods in reports and resource filters.
+const StandalonePodKind = "Standalone Pod"
+
 type MaybeValue struct {
 	Value   float64
 	Set     bool

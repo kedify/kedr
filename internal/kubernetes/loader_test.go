@@ -4,18 +4,72 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 
 	"github.com/kedify/kedr/internal/config"
+	"github.com/kedify/kedr/internal/model"
 )
+
+func TestStandalonePodDiscovery(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "shell", Namespace: "default", UID: "shell-uid", Labels: map[string]string{"app": "shell"}, CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour))}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}, {Name: "sidecar"}}}}
+	objects := make([]runtime.Object, 1, 10)
+	objects[0] = pod
+	for _, kind := range []string{"ReplicaSet", "StatefulSet", "DaemonSet", "Job", "CustomController"} {
+		managed := pod.DeepCopy()
+		managed.Name = "managed-" + kind
+		managed.OwnerReferences = controller(kind, "owner", "owner-uid")
+		objects = append(objects, managed)
+	}
+	nonController := pod.DeepCopy()
+	nonController.Name = "non-controller-owner"
+	nonController.OwnerReferences = []metav1.OwnerReference{{Kind: "CustomResource", Name: "owner", UID: "owner-uid"}}
+	mirror := pod.DeepCopy()
+	mirror.Name = "mirror"
+	mirror.Annotations = map[string]string{corev1.MirrorPodAnnotationKey: "hash"}
+	unselected := pod.DeepCopy()
+	unselected.Name, unselected.Labels = "unselected", nil
+	otherNamespace := pod.DeepCopy()
+	otherNamespace.Namespace = "other"
+	objects = append(objects, nonController, mirror, unselected, otherNamespace)
+	for _, resource := range []string{"*", "Pod", "Standalone Pod", "Deployment"} {
+		t.Run(resource, func(t *testing.T) {
+			cfg := config.Default("simple")
+			cfg.NamespaceValues, cfg.ResourceValues = []string{"default"}, []string{resource}
+			selector := "app=shell"
+			cfg.Selector = &selector
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			clients := Clients{Typed: fake.NewSimpleClientset(objects...), Dynamic: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{rolloutGVR: "RolloutList"})}
+			got, err := NewLoader(cfg).List(context.Background(), clients)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if resource == "Deployment" {
+				want = 0
+			}
+			if len(got) != want {
+				t.Fatalf("got %d containers, want %d: %+v", len(got), want, got)
+			}
+			for _, object := range got {
+				if object.Kind != model.StandalonePodKind || object.Name != pod.Name || object.Namespace != pod.Namespace || object.UID != string(pod.UID) || object.ReleaseStartedAt != pod.CreationTimestamp.UnixMilli() {
+					t.Fatalf("standalone identity or filtering failed: %+v", object)
+				}
+			}
+		})
+	}
+}
 
 func TestDeploymentDiscovery(t *testing.T) {
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "default"}, Spec: appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}}, Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}, {Name: "sidecar"}}}}}}
