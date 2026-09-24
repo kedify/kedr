@@ -211,7 +211,7 @@ func Run(cfg *config.Config, metrics Metrics, object model.Object) (Result, erro
 }
 
 func qualityReasons(quality analysis.DataQuality, policy analysis.Policy) []string {
-	var reasons []string
+	reasons := make([]string, 0, len(quality.Reasons))
 	for _, reason := range quality.Reasons {
 		message := string(reason)
 		if reason == analysis.ReasonInsufficientHistory {

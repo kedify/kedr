@@ -197,7 +197,12 @@ func (s Store) Load(id string) (Run, error) {
 	if !validID.MatchString(id) {
 		return Run{}, errors.New("invalid run ID")
 	}
-	data, err := os.ReadFile(filepath.Join(s.Root, id, "run.json"))
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		return Run{}, fmt.Errorf("open saved runs: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(filepath.Join(id, "run.json"))
 	if err != nil {
 		return Run{}, fmt.Errorf("read saved run %s: %w", id, err)
 	}
@@ -226,7 +231,7 @@ func WritePrivate(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	if _, err = f.Write(data); err != nil {
 		_ = f.Close()
 		return err

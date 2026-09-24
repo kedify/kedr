@@ -42,7 +42,10 @@ func TestRoundTripPrivateSnapshot(t *testing.T) {
 		t.Fatalf("query identity lost: %+v", object)
 	}
 	path := filepath.Join(store.Root, run.ID, "run.json")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Private test directory and a generated run ID.
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(data), "secret-value") {
 		t.Fatal("annotation persisted")
 	}

@@ -212,7 +212,7 @@ func Build(run runstore.Run, row runstore.Row) Document {
 							keys = append(keys, key)
 						}
 						sort.Strings(keys)
-						var parts []string
+						parts := make([]string, 0, len(keys))
 						for _, key := range keys {
 							value := native(r, s.Values[key])
 							if key == "coefficient" || key == "ratio" {
@@ -271,9 +271,12 @@ func Build(run runstore.Run, row runstore.Row) Document {
 					text := "Fallback " + attempt.Release + ": selected"
 					if !attempt.Selected {
 						text = "Fallback " + attempt.Release + ": rejected"
+						parts := make([]string, 1, len(attempt.Reasons)+1)
+						parts[0] = text
 						for _, reason := range attempt.Reasons {
-							text += "; " + reasonText(reason)
+							parts = append(parts, reasonText(reason))
 						}
+						text = strings.Join(parts, "; ")
 					}
 					evidence.Reasons = append(evidence.Reasons, text)
 				}
@@ -299,9 +302,12 @@ func Build(run runstore.Run, row runstore.Row) Document {
 		if r.Current {
 			role = "Current rollout"
 		}
+		roles := make([]string, 1, len(comparison.SizingResources)+1)
+		roles[0] = role
 		for _, resource := range comparison.SizingResources {
-			role += " · sizing source for " + string(resource)
+			roles = append(roles, "sizing source for "+string(resource))
 		}
+		role = strings.Join(roles, " · ")
 		cpu, mem := "unavailable", "unavailable"
 		if comparison.CPU.AggregatedUsage.Available {
 			cpu = native(model.CPU, comparison.CPU.AggregatedUsage.Value)

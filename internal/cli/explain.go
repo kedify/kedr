@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -23,19 +24,19 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 	var offline bool
 	cmd := &cobra.Command{Use: "explain <row>", Short: "Explain one row from a saved scan, with an interactive HTML report", Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
-			return usageError{fmt.Errorf("explain requires one positive row number")}
+			return usageError{errors.New("explain requires one positive row number")}
 		}
 		row, err := strconv.Atoi(args[0])
 		if err != nil || row < 1 {
-			return usageError{fmt.Errorf("row must be a positive integer")}
+			return usageError{errors.New("row must be a positive integer")}
 		}
 		return nil
 	}, RunE: func(cmd *cobra.Command, args []string) error {
 		if format != "html" && format != "text" {
-			return usageError{fmt.Errorf("--format must be html or text")}
+			return usageError{errors.New("--format must be html or text")}
 		}
 		if format == "text" && output != "" {
-			return usageError{fmt.Errorf("--output requires --format html")}
+			return usageError{errors.New("--output requires --format html")}
 		}
 		store, err := openStore()
 		if err != nil {
@@ -60,7 +61,9 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 		if format == "text" || offline {
 			d.ChartStatus = "Offline: usage samples were not saved. Saved OOM events and reference lines are shown when available; the original decision evidence remains below."
 		} else {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Fetching historical chart data for the saved scan window…")
+			if _, err = fmt.Fprintln(cmd.ErrOrStderr(), "Fetching historical chart data for the saved scan window…"); err != nil {
+				return err
+			}
 			metrics, warnings, fetchErr := explain.Fetch(cmd.Context(), row, cfg)
 			if cmd.Context().Err() != nil {
 				return cmd.Context().Err()
@@ -95,12 +98,16 @@ func newExplainCommand(openStore func() (runstore.Store, error)) *cobra.Command 
 		if err = runstore.WritePrivate(output, data); err != nil {
 			return fmt.Errorf("write HTML explanation: %w", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), d.ChartStatus)
+		if _, err = fmt.Fprintln(cmd.OutOrStdout(), d.ChartStatus); err != nil {
+			return err
+		}
 		link := (&url.URL{Scheme: "file", Path: output}).String()
 		// Use OSC 8 only on a terminal; redirected output remains plain text.
 		if f, ok := cmd.OutOrStdout().(*os.File); ok {
 			if info, e := f.Stat(); e == nil && info.Mode()&os.ModeCharDevice != 0 && os.Getenv("TERM") != "dumb" {
-				fmt.Fprintf(cmd.OutOrStdout(), "\x1b]8;;%s\x1b\\Open explanation\x1b]8;;\x1b\\\n", link)
+				if _, err = fmt.Fprintf(cmd.OutOrStdout(), "\x1b]8;;%s\x1b\\Open explanation\x1b]8;;\x1b\\\n", link); err != nil {
+					return err
+				}
 			}
 		}
 		// Quote control characters in the fallback path, while leaving ordinary paths readable.
