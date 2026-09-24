@@ -20,7 +20,7 @@ func TestHelpAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain"} {
+	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain", "--full"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help missing %s", flag)
 		}
@@ -40,6 +40,9 @@ func TestRolloutEvidenceDefaults(t *testing.T) {
 		}
 		if cmd.Flags().Lookup("minimum-history-hours").DefValue != "1" || cmd.Flags().Lookup("points-required").DefValue != "30" || cmd.Flags().Lookup("release-history").DefValue != "4" {
 			t.Fatal("CLI defaults do not match one hour, 30 observations and current plus three previous rollouts")
+		}
+		if flag := cmd.Flags().Lookup("full"); flag == nil || flag.DefValue != "false" {
+			t.Fatal("full table output should be available and disabled by default")
 		}
 		if flag := cmd.Flags().Lookup("history-duration-hours"); flag == nil || flag.DefValue != "48" {
 			t.Fatal("history-duration-hours should default to 48 hours")

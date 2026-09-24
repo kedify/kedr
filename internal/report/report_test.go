@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/csv"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
 		{"fractional recommendation", .1, .02755247433231, 1, "-72m", "100m -> 28m"},
 		{"whole cores", 2, 2 - 1.45744752566769, 1, "-1457m", "2000m -> 543m"},
 		{"round to nearest millicore", 2, .54255, 1, "-1457m", "2000m -> 543m"},
-		{"display zero", .1, .1 - .0000001, 1, "+0m", "100m -> 100m"},
+		{"display zero", .1, .1 - .0000001, 1, "", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			report := fixture()
@@ -124,6 +125,116 @@ func TestTableUnknownAndUnsetQuantities(t *testing.T) {
 				t.Fatal("unknown/unset recommendation produced a numeric diff")
 			}
 		}
+	}
+}
+
+func TestTableRowVisibility(t *testing.T) {
+	const mi = 1024 * 1024
+	current := [4]model.MaybeValue{model.Number(2), model.Number(4), model.Number(100 * mi), model.Number(256 * mi)}
+	unknown := [4]model.MaybeValue{model.Unknown(), model.Unknown(), model.Unknown(), model.Unknown()}
+	for _, tc := range []struct {
+		name                 string
+		current, recommended [4]model.MaybeValue
+		visible              bool
+		cells                [4]string
+	}{
+		{"no evidence", current, unknown, false, [4]string{"2000m -> ?", "4000m -> ?", "100Mi -> ?", "256Mi -> ?"}},
+		{"unknown current and recommendation", unknown, unknown, false, [4]string{"? -> ?", "? -> ?", "? -> ?", "? -> ?"}},
+		{"unchanged", current, current, false, [4]string{}},
+		{"unchanged and unknown", current, [4]model.MaybeValue{current[0], model.Unknown(), current[2], model.Unknown()}, false, [4]string{"", "4000m -> ?", "", "256Mi -> ?"}},
+		{"unset unchanged", [4]model.MaybeValue{}, [4]model.MaybeValue{}, false, [4]string{}},
+		{"rounded unchanged", current, [4]model.MaybeValue{model.Number(2.0001), current[1], current[2], current[3]}, false, [4]string{}},
+		{"CPU request only", current, [4]model.MaybeValue{model.Number(1), current[1], current[2], current[3]}, true, [4]string{"2000m -> 1000m"}},
+		{"CPU limit only", current, [4]model.MaybeValue{current[0], model.Number(3), current[2], current[3]}, true, [4]string{"", "4000m -> 3000m"}},
+		{"memory request only", current, [4]model.MaybeValue{current[0], current[1], model.Number(150 * mi), current[3]}, true, [4]string{"", "", "100Mi -> 150Mi"}},
+		{"memory limit only", current, [4]model.MaybeValue{current[0], current[1], current[2], model.Number(300 * mi)}, true, [4]string{"", "", "", "256Mi -> 300Mi"}},
+		{"change and unknown", current, [4]model.MaybeValue{model.Number(1), model.Unknown(), model.Unknown(), model.Unknown()}, true, [4]string{"2000m -> 1000m", "4000m -> ?", "100Mi -> ?", "256Mi -> ?"}},
+		{"initialize unset", [4]model.MaybeValue{}, [4]model.MaybeValue{model.Number(.01)}, true, [4]string{"unset -> 10m"}},
+		{"unset differs from zero", [4]model.MaybeValue{}, [4]model.MaybeValue{model.Number(0)}, true, [4]string{"unset -> 0m"}},
+		{"remove limit", current, [4]model.MaybeValue{current[0], model.Unset(), current[2], current[3]}, true, [4]string{"", "4000m -> unset"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := fixture()
+			scan := &r.Scans[0]
+			scan.Object.Name = "visibility-target"
+			scan.Object.Warnings = []string{"target-diagnostic"}
+			for i, kind := range model.ResourceTypes {
+				scan.Object.Allocations.Requests[kind], scan.Object.Allocations.Limits[kind] = tc.current[2*i], tc.current[2*i+1]
+				scan.Recommended.Requests[kind] = model.RecommendationValue{Value: tc.recommended[2*i]}
+				scan.Recommended.Limits[kind] = model.RecommendationValue{Value: tc.recommended[2*i+1]}
+			}
+			// The next row keeps number 2 even when the first row is hidden.
+			r.Scans = append(r.Scans, fixture().Scans[0])
+			before, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, full := range []bool{false, true} {
+				cfg := config.Default("simple")
+				cfg.Full, cfg.Explain = full, true
+				text, err := Render(r, cfg, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := tc.visible || full
+				if strings.Contains(text, "visibility-target") != want || strings.Contains(text, "target-diagnostic") != want {
+					t.Fatalf("full=%t: unexpected row or diagnostic visibility:\n%s", full, text)
+				}
+				rows := 0
+				for _, line := range strings.Split(text, "\n") {
+					cells := strings.Split(line, "│")
+					if len(cells) != 15 || strings.TrimSpace(cells[1]) == "Number" {
+						continue
+					}
+					rows++
+					number := 2
+					if strings.TrimSpace(cells[3]) == "visibility-target" {
+						number = 1
+					}
+					if strings.TrimSpace(cells[1]) != strconv.Itoa(number)+"." {
+						t.Fatalf("row number changed: %s", line)
+					}
+					if number == 1 {
+						for i, col := range []int{9, 10, 12, 13} {
+							if got := strings.TrimSpace(cells[col]); got != tc.cells[i] {
+								t.Fatalf("full=%t column %d: got %q, want %q", full, col, got, tc.cells[i])
+							}
+							if i%2 == 0 && tc.cells[i] == "" && strings.TrimSpace(cells[col-1]) != "" {
+								t.Fatalf("unchanged request has a diff: %s", line)
+							}
+						}
+					}
+				}
+				wantRows := 1
+				if want {
+					wantRows++
+				}
+				if rows != wantRows {
+					t.Fatalf("got %d table rows, want %d", rows, wantRows)
+				}
+			}
+			// Filtering is only a table view; exports and saved scan data stay complete.
+			for _, format := range []string{"json", "yaml", "pprint", "csv", "csv-raw", "html"} {
+				cfg := config.Default("simple")
+				cfg.Format = format
+				text, err := Render(r, cfg, false)
+				if err != nil || !strings.Contains(text, "visibility-target") {
+					t.Fatalf("%s lost a row: %v", format, err)
+				}
+			}
+			if !tc.visible {
+				hidden := r
+				hidden.Scans = r.Scans[:1]
+				text, err := Render(hidden, config.Default("simple"), false)
+				if err != nil || text != "No resource changes to display. Use --full to show all rows." {
+					t.Fatalf("missing empty-table guidance: %q, %v", text, err)
+				}
+			}
+			after, err := json.Marshal(r)
+			if err != nil || string(after) != string(before) {
+				t.Fatal("table filtering mutated the report")
+			}
+		})
 	}
 }
 

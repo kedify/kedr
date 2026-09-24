@@ -102,6 +102,14 @@ func tableQuantity(kind model.ResourceType) func(float64) string {
 	return resource.FormatMemory
 }
 
+func tableTransition(current model.MaybeValue, recommended model.RecommendationValue, format func(float64) string) string {
+	// Compare displayed quantities, but retain unknown recommendations as evidence gaps.
+	if !recommended.Value.Unknown && value(current, format) == value(recommended.Value, format) {
+		return ""
+	}
+	return transition(current, recommended, false, format)
+}
+
 func legacyQuantity(model.ResourceType) func(float64) string { return resource.Format }
 
 func headers(cfg *config.Config, raw bool) []string {
@@ -160,6 +168,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	clusters := map[string]bool{}
 	visible := make([]int, 0, len(report.Scans))
 	for i, s := range report.Scans {
+		if !cfg.Full && !hasTableChange(s) {
+			continue
+		}
 		visible = append(visible, i)
 		if s.Object.Cluster != nil {
 			clusters[*s.Object.Cluster] = true
@@ -192,12 +203,12 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			format := tableQuantity(r)
 			current := scan.Object.Allocations.Requests[r]
 			recommended := scan.Recommended.Requests[r]
-			request := transition(current, recommended, false, format)
+			request := tableTransition(current, recommended, format)
 			change := diff(current, recommended, scan.Object.CurrentPods(), format)
-			if !current.Set && !current.Unknown && recommended.Value.Set && !recommended.Value.Unknown {
+			if request == "" || (!current.Set && !current.Unknown && recommended.Value.Set && !recommended.Value.Unknown) {
 				change = ""
 			}
-			row = append(row, change, request, transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false, format))
+			row = append(row, change, request, tableTransition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], format))
 		}
 		rows = append(rows, row)
 	}
@@ -226,6 +237,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		title += "\n\n"
 	}
 	table := title + t.String()
+	if len(visible) == 0 && len(report.Scans) > 0 {
+		table = title + "No resource changes to display. Use --full to show all rows."
+	}
 	if !cfg.Explain {
 		return table
 	}
@@ -237,6 +251,22 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		}
 	}
 	return table + "\nDiff columns: total request change across current pods. Requests and limits are per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+}
+
+func hasTableChange(scan model.Scan) bool {
+	for _, r := range model.ResourceTypes {
+		format := tableQuantity(r)
+		for _, setting := range []struct{ current, recommended model.MaybeValue }{
+			{scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r].Value},
+			{scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r].Value},
+		} {
+			// Compare displayed values: a rounded X -> X is also a table no-op.
+			if !setting.recommended.Unknown && value(setting.current, format) != value(setting.recommended, format) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func alignTableArrows(rows [][]string, col int) {

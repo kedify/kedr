@@ -110,6 +110,7 @@ func strategyCommand(name string) *cobra.Command {
 	f.StringVarP(&cfg.Format, "formatter", "f", "table", "Output formatter (table, json, yaml, pprint, csv, csv-raw, html)")
 	f.BoolVar(&cfg.NoSave, "no-save", false, "Do not save this scan for kedr explain")
 	f.BoolVar(&cfg.Explain, "explain", false, "Show explanations, diagnostics, and score after the table")
+	f.BoolVar(&cfg.Full, "full", false, "Show all table rows, including unchanged and unavailable recommendations")
 	f.BoolVar(&cfg.ShowClusterName, "show-cluster-name", false, "Always show cluster name")
 	f.BoolVar(&b.excludeSeverity, "exclude-severity", false, "Exclude severity from CSV output")
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose logging and disable progress animation")

@@ -211,7 +211,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		if saveErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: this scan could not be saved for kedr explain: %v\n", saveErr)
 		} else if cfg.Format == "table" {
-			fmt.Fprintf(os.Stdout, "\nSaved run %s · Explain a row: kedr explain 1\n", saved.ID)
+			if _, err = fmt.Fprintf(os.Stdout, "\nSaved run %s · Explain a row: kedr explain <row>\n", saved.ID); err != nil {
+				return fmt.Errorf("write saved run reference: %w", err)
+			}
 		}
 	}
 

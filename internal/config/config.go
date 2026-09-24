@@ -77,6 +77,7 @@ type Config struct {
 	JobGroupingLimit          int               `json:"job_grouping_limit" yaml:"job_grouping_limit"`
 	Format                    string            `json:"format" yaml:"format"`
 	Explain                   bool              `json:"-" yaml:"-"`
+	Full                      bool              `json:"-" yaml:"-"`
 	ShowClusterName           bool              `json:"show_cluster_name" yaml:"show_cluster_name"`
 	Strategy                  string            `json:"strategy" yaml:"strategy"`
 	LogToStderr               bool              `json:"log_to_stderr" yaml:"log_to_stderr"`
