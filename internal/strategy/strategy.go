@@ -98,7 +98,7 @@ func currentSignal(object model.Object, resource model.ResourceType, limit bool)
 	if limit {
 		value = object.Allocations.Limits[resource]
 	}
-	signal := analysis.Signal{Available: !value.Unknown, Timestamp: object.ObservedAt}
+	signal := analysis.Signal{Available: !value.Unknown, Unset: !value.Unknown && !value.Set, Timestamp: object.ObservedAt}
 	if value.Set {
 		signal.Value = value.Value
 	}
@@ -111,7 +111,7 @@ func currentSignal(object model.Object, resource model.ResourceType, limit bool)
 			actual = pod.Allocations.Limits[resource]
 		}
 		if actual.Unknown || actual.Set != value.Set || actual.Value != value.Value {
-			signal.Available = false
+			signal.Available, signal.Unset = false, false
 		}
 	}
 	if resource == model.CPU {

@@ -188,17 +188,71 @@ func TestInputUnitsSettingsAndOOMOptIn(t *testing.T) {
 	if result = run(t, cfg, metrics, object); result.Resources[model.Memory].Request.Value != 512*testMiB {
 		t.Fatal("unknown failed limit must block downsizing")
 	}
-	// Observed absence is zero; inconsistent settings across replicas are missing.
+	// Known absence is distinct from zero; inconsistent settings are unavailable.
 	object.Allocations.Limits[model.CPU] = model.Unset()
 	object.Pods[0].Allocations = object.Allocations
 	in = Input(cfg, metrics, object)
-	if !in.Containers[0].CPU.CurrentLimit.Available || in.Containers[0].CPU.CurrentLimit.Value != 0 {
-		t.Fatal("unset limit lost observed-zero semantics")
+	if !in.Containers[0].CPU.CurrentLimit.Available || !in.Containers[0].CPU.CurrentLimit.Unset {
+		t.Fatal("known unset limit lost its absence marker")
 	}
 	different := model.EmptyAllocations()
 	object.Pods[0].Allocations = different
 	if in = Input(cfg, metrics, object); in.Containers[0].CPU.CurrentRequest.Available {
 		t.Fatal("inconsistent current settings were not marked unavailable")
+	}
+}
+
+func TestSmallUnsetAllocationsAreInitialized(t *testing.T) {
+	for _, name := range []string{"simple", "simple_limit"} {
+		for _, cpu := range []float64{.024, .002} {
+			cfg, metrics, object := fixture(4)
+			cfg.Strategy = name
+			cfg.MemoryMinValue = 1
+			object.Allocations = model.EmptyAllocations()
+			object.Pods[0].Allocations = object.Allocations
+			for i := range metrics.CPU[0].Samples {
+				metrics.CPU[0].Samples[i].Value = float64(i) * 60 * cpu
+				metrics.Memory[0].Samples[i].Value = 2 * testMiB
+			}
+			got := run(t, cfg, metrics, object)
+			wantCPU := math.Max(cpu, .01)
+			request := got.Resources[model.CPU].Request
+			if !request.Set || request.Unknown || math.Abs(request.Value-wantCPU) > 1e-9 {
+				t.Fatalf("%s did not initialize a small CPU request: %+v", name, request)
+			}
+			limit := got.Resources[model.CPU].Limit
+			if name == "simple" {
+				if limit.Set || limit.Unknown {
+					t.Fatalf("simple changed an unset CPU limit: %+v", limit)
+				}
+			} else if !limit.Set || limit.Unknown || math.Abs(limit.Value-wantCPU*5) > 1e-9 {
+				t.Fatalf("simple_limit did not initialize CPU limit: %+v", limit)
+			}
+			for _, v := range []model.MaybeValue{got.Resources[model.Memory].Request, got.Resources[model.Memory].Limit} {
+				if !v.Set || v.Unknown || v.Value != 2*testMiB*1.15 {
+					t.Fatalf("%s did not initialize a small memory setting: %+v", name, v)
+				}
+			}
+			for _, result := range got.Analysis.Results {
+				if !result.Evidence.CurrentRequest.Unset || !result.Evidence.CurrentLimit.Unset {
+					t.Fatal("unset allocations were collapsed to zero")
+				}
+			}
+		}
+	}
+}
+
+func TestCurrentSignalDistinguishesUnsetZeroAndUnknown(t *testing.T) {
+	for _, value := range []model.MaybeValue{model.Unset(), model.Number(0), model.Unknown()} {
+		cfg, metrics, object := fixture(4)
+		object.Allocations.Requests[model.CPU] = value
+		object.Allocations.Limits[model.Memory] = value
+		in := Input(cfg, metrics, object).Containers[0]
+		for _, signal := range []analysis.Signal{in.CPU.CurrentRequest, in.Memory.CurrentLimit} {
+			if signal.Available != !value.Unknown || signal.Unset != (!value.Unknown && !value.Set) {
+				t.Fatalf("allocation %+v converted to %+v", value, signal)
+			}
+		}
 	}
 }
 

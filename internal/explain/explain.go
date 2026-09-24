@@ -176,6 +176,9 @@ func Build(run runstore.Run, row runstore.Row) Document {
 					switch t.Disposition {
 					case "recommended":
 						card.Reason = "The usage-based candidate passed the evaluated safety and material-change guards."
+						if setting == analysis.SettingRequests && a.Evidence.CurrentRequest.Unset || setting == analysis.SettingLimits && a.Evidence.CurrentLimit.Unset {
+							card.Reason = "The usage-based candidate passed the evaluated safety guards. This setting was unset, so minimum-change thresholds do not apply."
+						}
 					case "disabled":
 						card.Reason = "This strategy changes requests only; the existing limit is preserved."
 					case "retained":

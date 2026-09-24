@@ -1,6 +1,7 @@
 package explain
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,39 @@ func TestPeakReductionAndGaps(t *testing.T) {
 		t.Fatalf("gap bridged: %v", got)
 	}
 }
+func TestUnsetInitializationExplanation(t *testing.T) {
+	run, row, metrics := fixture(t)
+	object := row.Scan.Object
+	object.Allocations.Requests[model.CPU] = model.Unset()
+	object.Pods[0].Allocations.Requests[model.CPU] = model.Unset()
+	for i := range metrics.CPU[0].Samples {
+		metrics.CPU[0].Samples[i].Value = float64(i) * 60 * .024
+	}
+	raw, err := strategy.Run(config.Default("simple"), metrics, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Scan = recommend.Scan(object, raw)
+	// Saved JSON must retain the unset marker for later offline explanations.
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved runstore.Row
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	card := Build(run, saved).Cards[0]
+	if card.Current != "unset" || card.Recommended != "24m" || card.Outcome != "recommended" || !strings.Contains(card.Reason, "minimum-change thresholds do not apply") {
+		t.Fatalf("initialization was not explained: %+v", card)
+	}
+	for _, step := range card.Steps {
+		if step.Rule == "material change" {
+			t.Fatal("initialization explanation still compares against zero")
+		}
+	}
+}
+
 func TestHTMLSafeAndStandalone(t *testing.T) {
 	run, row, metrics := fixture(t)
 	attack := "</script><script>alert('unsafe')</script>"
