@@ -48,6 +48,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	states := make([]clusterState, 0, len(clusters))
 	allObjects := 0
 	reportErrors := []map[string]any{}
+	diagnosticEndpoints := make(map[string]string, len(clusters))
 	for _, cluster := range clusters {
 		contextName := "in-cluster"
 		if cluster.Name != nil {
@@ -69,6 +70,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			log.Debugf("Metrics endpoint discovery: %s", time.Since(started).Round(time.Millisecond))
 		}
 		log.Debugf("Prometheus URL: %s (%s)", logging.SafeURL(endpoint), endpointSource)
+		diagnosticEndpoints[contextName] = logging.SafeURL(endpoint)
 		pc, createErr := prom.New(ctx, cfg, endpoint, log)
 		if createErr != nil {
 			return createErr
@@ -181,6 +183,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return errors.New("no successful scans were made")
 	}
 	model.SortObjectsFromScans(scans)
+	reportErrors = append(reportErrors, logScanDiagnostics(log, scans, diagnosticEndpoints)...)
 	description := description(cfg)
 	summary := map[string]any{}
 	if len(states) == 1 {
