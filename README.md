@@ -33,8 +33,31 @@ Use `kedr simple --help` or `kedr simple_limit --help` for the complete option r
 
 Table output includes a saved-run reference and an `explain` hint. Add `--explain`
 to include the diff legend, workload diagnostics, rollout comparisons, and score.
+By default, the table shows only rows with at least one visible request or limit
+change. Rows with only unchanged or unknown (`?`) recommendations are hidden;
+`--full` shows every row. Unchanged request and limit cells (including
+`unset -> unset`) stay blank in both modes. Other output formats and saved scans retain all rows.
+Row numbers can have gaps because they keep their saved-run mapping for `kedr explain`.
 With `--verbose`, the calculating indicator becomes a single
 `Calculating recommendations` log line so it does not interrupt the logs.
+Verbose logs also show the Kubernetes context, selected Prometheus URL (and whether
+it was auto-discovered), and collection diagnostics such as missing CPU or memory
+metrics. URL credentials and query parameters are omitted.
+Discovery lists matching Prometheus, Mimir, VictoriaMetrics, and Thanos services
+and ingresses. A single endpoint is selected automatically; multiple endpoints
+open a numbered choice showing the backend, namespace, resource name, and URL.
+Enter a number to select one or `q` to cancel. The prompt uses stderr, so reports
+can still be redirected. Without an interactive stdin and stderr, kedr lists the
+candidates and exits with instructions to supply `--prometheus-url <URL>`.
+That flag bypasses discovery and the prompt, including in scripts. Discovered
+Kubernetes service-proxy URLs can be passed directly and use the context's credentials.
+When every applicable workload in a context is missing the same metrics, kedr
+prints one warning with setup guidance, even without `--verbose`. KSM ownership
+metrics require kube-state-metrics to be installed and scraped; CPU and memory
+usage require kubelet/cAdvisor scraping. The warning also calls out endpoint,
+tenant, filtering, and Mimir remote-write configuration. These shared problems
+are summarized instead of repeating their codes in verbose logs. Detailed codes
+remain in saved scans and reports, and the summary is included in JSON/YAML errors.
 
 ## Explain a recommendation
 
@@ -106,11 +129,16 @@ the module. No extra KRR percentile interpolation, sizing, rounding, or floors r
 after `Analyze`; exact recommendations are retained, with CPU converted from the
 module's millicores to report cores. Display formatting does not change stored values.
 
+Known unset requests and limits can receive initial values below the analyzer's
+minimum-change thresholds. These thresholds apply only to existing numeric
+settings. Evidence and safety guards still apply; `simple` continues to leave CPU
+limits unchanged, while `simple_limit` can initialize them.
+
 The analyzer requires one hour of observed history by default, 30 distinct
 observation times, 90% coverage,
 and fresh observations. Missing historical samples reduce measured coverage but
-do not independently block recommendations. `--history-duration`
-controls the query window; it does **not** weaken these guards. Explicitly change
+do not independently block recommendations. `--history-duration-hours` defaults to
+48 hours and controls the query window; it does **not** weaken these guards. Explicitly change
 `--minimum-history-hours` when a shorter evidence requirement is appropriate.
 `--points-required` applies to distinct observations, not repeated query evaluations.
 CPU and memory retain native scrape samples; `--timeframe-duration` only controls
@@ -174,10 +202,24 @@ result retains the current setting; unavailable evidence displays `?`.
 
 `--use-oomkill-data` forwards actual OOMKilled termination events from Kubernetes
 pod status and, when available, kube-state-metrics. Repeated observations use the
-same event ID. The adapter never substitutes the current configured limit for an
-unknown termination-time limit: such events use the shared analyzer's conservative
-usage-based fallback and block downsizing. The existing
-`--oom-memory-buffer-percentage` sets `OOMKilledCoefficient` (default 1.25).
+same event ID. Current-rollout OOM evidence can trigger a memory increase without
+usage samples, minimum history, coverage, or fresh usage. The failed limit is used
+when known; otherwise the analyzer explicitly falls back to the current memory
+limit, then the current request, then qualifying usage. Repeated events do not
+compound the multiplier. Unknown failed limits block reductions. Existing resource
+bounds and change thresholds still apply, including the default 100Mi minimum.
+`--oom-memory-buffer-percentage` defaults to 50 (a multiplier of 1.5).
+With this flag enabled, the table ends with `OOMKilled`, showing the latest
+selected event as `Yes (59s ago)`, `Yes (5m ago)`, or a local clock time for events
+older than 15 minutes. Earlier days include `yesterday` or the date. Rows with an
+OOM event remain visible even when no resource change can be recommended.
+KSM exposes the last termination reason/time and a restart counter for all causes,
+so the table retains the timestamp instead of presenting an incomplete OOM count.
+`kedr explain` plots the saved OOM events and memory allocation reference lines
+even offline or when historical usage is unavailable. The walkthrough shows the
+OOM sizing base, multiplier, resulting floor, and any minimum/maximum bounds;
+for example, `50Mi × 1.5 = 75Mi`, raised to the configured `100Mi` minimum.
+Event markers and calculations always come from the original scan.
 
 `--detect-memory-leaks` enables the module's advisory lower-baseline trend detector.
 It is off by default, does not change sizing, and uses its own six-hour minimum history, independent of the one-hour sizing
@@ -188,10 +230,18 @@ not a diagnosis; useful allocations and growing caches can look similar.
 ## Workloads and metrics
 
 Discovery supports Deployment, StatefulSet, DaemonSet, Job, CronJob, GroupedJob,
-and Argo Rollout. StrimziPodSet and OpenShift DeploymentConfig are intentionally
+Argo Rollout, and standalone pods. StrimziPodSet and OpenShift DeploymentConfig are intentionally
 unsupported. A GroupedJob spans independent Job UIDs and cannot currently be passed
 as one trustworthy analyzer target: it is reported with unavailable identity and
 `GroupedJobIdentityUnsupported`, not a pooled recommendation.
+
+Pods with no owner references, such as those created with `kubectl run`, are included
+by default with `Kind = Standalone Pod`, one row per regular container. Mirror/static
+pods are excluded. Use `--resource Pod` (or `--resource StandalonePod`) to scan only
+standalone pods; namespace and label filters apply as usual. The pod UID and creation
+time define its history boundary. Container restarts within that pod remain eligible;
+an older pod with the same name is not a previous rollout or fallback source. These
+pods use the same evidence requirements and recommendation policies as other workloads.
 
 KEDR supports an explicit Prometheus URL and in-cluster discovery of Prometheus, VictoriaMetrics, Thanos, and Mimir. Authentication options include arbitrary headers, bearer tokens, custom CAs through the base64-encoded `CERTIFICATE` environment variable, Amazon Managed Prometheus SigV4/role assumption, Coralogix, and OpenShift service-account tokens. The `--openshift` flag controls only Prometheus authentication; it does not enable DeploymentConfig discovery.
 
@@ -220,7 +270,8 @@ are selected deterministically, preferring `job="kubelet"`; they are not pooled.
 
 The Kubernetes service account needs access to workload objects, pods,
 ReplicaSets, ControllerRevisions (for StatefulSets/DaemonSets), and Jobs for
-CronJob ownership. Pod UIDs, revision identity, pod creation time, and container
+CronJob ownership. Standalone pod discovery and observation need `list` and `get`
+access to pods. Pod UIDs, revision identity, pod creation time, and container
 lifetime IDs are retained when available. When cAdvisor
 does not expose a lifetime ID, only the API-verified current container lifetime is
 used. Unobserved controller generations and inconsistent replica resource settings
@@ -238,12 +289,27 @@ documented rollback limitations.
 
 The default terminal table uses the Charm Bubble Tea, Bubbles, and Lip Gloss stack. Non-terminal output never contains animation or ANSI escapes.
 
+CPU Diff and Memory Diff use separate color scales over the visible rows. Savings
+range from muted grey-green to bright green; increases range from muted warm grey
+through orange to bright red. The largest change of each sign is bold. Scales use
+the displayed total request change across current pods, excluding unset/unknown allocations,
+unchanged displayed values, and zero totals. Remaining numeric diffs outside the
+scale are grey. Equal changes share
+a shade; a single change of one sign uses the brightest shade.
+Colors adapt to the terminal's supported palette. `--no-color` or any nonempty
+`NO_COLOR` value disables all terminal colors, including headers and the progress
+indicator. Redirected output and saved table files contain no ANSI styling.
+
 Table resource quantities are rounded to whole numbers. CPU always uses the
 nearest millicore (`m`), including values above one core (`542.55m` becomes `543m`);
 memory uses binary units.
-Diff columns show total request changes across current pods, while parenthesized
-changes are per container. Diffs are calculated before display rounding, so small
-rounding differences can occur when multiplying the displayed per-container value.
+Diff columns show total request changes across current pods; previously unset or
+unchanged requests leave the diff cell blank. OOM rows with no current pods show the
+per-container memory change, so `50Mi -> 100Mi` displays `+50Mi` instead of `+0`.
+Request and limit columns show per-container
+values with vertically aligned arrows. Diffs are
+calculated before display rounding, so small rounding differences can occur when
+multiplying the displayed per-container value.
 Structured and raw reports retain the original recommendation precision.
 
 Available formatters are `table`, `json`, `yaml`, `pprint`, `csv`, `csv-raw`, and `html`. Write a copy with `--fileoutput PATH`, or use `--fileoutput-dynamic` to create `kedr-YYYYMMDDhhmmss.FORMAT`.

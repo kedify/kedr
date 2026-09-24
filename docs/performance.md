@@ -22,8 +22,9 @@ queries would change recommendation semantics.
 - Decode matrix sample pairs directly into numbers, avoiding per-sample
   `RawMessage` allocations and repeated JSON decoding. Preallocate sample arrays
   and merge responses as they arrive.
-- Discover metrics endpoints from one service list and at most one ingress list,
-  preserving selector priority. Previously discovery could issue up to 36 lists.
+- Discover metrics endpoints from one service list and at most one ingress list.
+  All matching endpoints are deduplicated and offered for selection when there
+  are alternatives. Previously discovery could issue up to 36 lists.
 - Add phase timings to verbose CLI logs.
 
 These collection optimizations preserve raw scrape timestamps, values, lifetime
@@ -59,6 +60,7 @@ binaries:
 /usr/bin/time -p ./bin/kedr simple \
   --namespace cert-manager --resource Deployment \
   --selector app.kubernetes.io/component=controller \
+  --history-duration-hours 336 \
   --formatter json --verbose --logtostderr > /tmp/kedr-report.json
 ```
 
@@ -74,5 +76,5 @@ Local benchmarks on an Apple M1 Pro with Go 1.27, three runs per version:
 The latency benchmark isolates scheduling and request count using an empty
 response; it does not simulate server query execution or large transfers.
 Tests cover concurrency across workloads, response budgets, gap-free native
-windows, lifetime boundaries, cancellation, OOM retention, discovery priority,
+windows, lifetime boundaries, cancellation, OOM retention, endpoint discovery,
 and malformed/non-finite samples.
