@@ -119,7 +119,7 @@ func TestEmptySlicesSerializeAsArrays(t *testing.T) {
 			t.Fatalf("missing %s: %s", field, text)
 		}
 	}
-	for _, field := range []string{`"history_duration":"336"`, `"points_required":"30"`, `"allow_hpa":false`} {
+	for _, field := range []string{`"history_duration":"48"`, `"points_required":"30"`, `"allow_hpa":false`} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("missing KRR-compatible other_args field %s: %s", field, text)
 		}
@@ -146,6 +146,7 @@ func TestExcludeSeverityOnlyCSV(t *testing.T) {
 func TestEKSQueryStepCompatibility(t *testing.T) {
 	cfg := Default("simple")
 	cfg.EKSManagedProm = true
+	cfg.HistoryDuration = 336
 	cfg.TimeframeDuration = 1
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

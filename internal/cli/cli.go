@@ -123,7 +123,7 @@ func strategyCommand(name string) *cobra.Command {
 }
 
 func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
-	f.Float64Var(&cfg.HistoryDuration, "history-duration", 336, "Prometheus history duration in hours")
+	f.Float64Var(&cfg.HistoryDuration, "history-duration-hours", cfg.HistoryDuration, "Prometheus history duration in hours")
 	f.Float64Var(&cfg.TimeframeDuration, "timeframe-duration", 1.25, "Optional OOM query step in minutes; CPU/memory use native scrape samples")
 	f.Float64Var(&cfg.MinimumHistoryHours, "minimum-history-hours", cfg.MinimumHistoryHours, "Minimum observed history required for sizing, independent of query duration")
 	f.IntVar(&cfg.ReleaseHistory, "release-history", cfg.ReleaseHistory, "Total rollouts to retain (1-4): current plus up to three previous rollouts for fallback")

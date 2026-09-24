@@ -158,7 +158,7 @@ func Default(strategy string) *Config {
 		ShowSeverity:           true,
 		Strategy:               strategy,
 		OtherArgs:              map[string]any{},
-		HistoryDuration:        336,
+		HistoryDuration:        48,
 		TimeframeDuration:      1.25,
 		CPUPercentile:          95,
 		CPURequest:             66,
