@@ -158,7 +158,9 @@ func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error
 func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	h := []string{"Number"}
 	clusters := map[string]bool{}
-	for _, s := range report.Scans {
+	visible := make([]int, 0, len(report.Scans))
+	for i, s := range report.Scans {
+		visible = append(visible, i)
 		if s.Object.Cluster != nil {
 			clusters[*s.Object.Cluster] = true
 		}
@@ -167,12 +169,16 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	if showCluster {
 		h = append(h, "Cluster")
 	}
-	h = append(h, "Namespace", "Name", "Pods", "Old Pods", "Type", "Container")
+	h = append(h, "Namespace", "Name", "Kind", "Pods", "Old Pods", "Container")
+	firstResourceColumn := len(h)
 	for _, r := range []string{"CPU", "Memory"} {
 		h = append(h, r+" Diff", r+" Requests", r+" Limits")
 	}
-	rows := make([][]string, 0, len(report.Scans))
-	for i, scan := range report.Scans {
+	lastResourceColumn := len(h)
+	rows := make([][]string, 0, len(visible))
+	for _, i := range visible {
+		scan := report.Scans[i]
+		// Keep the saved-run row number so kedr explain selects the same scan.
 		row := []string{fmt.Sprintf("%d.", i+1)}
 		if showCluster {
 			name := ""
@@ -181,12 +187,23 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			}
 			row = append(row, name)
 		}
-		row = append(row, scan.Object.Namespace, scan.Object.Name, strconv.Itoa(scan.Object.CurrentPods()), strconv.Itoa(scan.Object.DeletedPods()), scan.Object.Kind, scan.Object.Container)
+		row = append(row, scan.Object.Namespace, scan.Object.Name, scan.Object.Kind, strconv.Itoa(scan.Object.CurrentPods()), strconv.Itoa(scan.Object.DeletedPods()), scan.Object.Container)
 		for _, r := range model.ResourceTypes {
 			format := tableQuantity(r)
-			row = append(row, diff(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], scan.Object.CurrentPods(), format), transition(scan.Object.Allocations.Requests[r], scan.Recommended.Requests[r], true, format), transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false, format))
+			current := scan.Object.Allocations.Requests[r]
+			recommended := scan.Recommended.Requests[r]
+			request := transition(current, recommended, false, format)
+			change := diff(current, recommended, scan.Object.CurrentPods(), format)
+			if !current.Set && !current.Unknown && recommended.Value.Set && !recommended.Value.Unknown {
+				change = ""
+			}
+			row = append(row, change, request, transition(scan.Object.Allocations.Limits[r], scan.Recommended.Limits[r], false, format))
 		}
 		rows = append(rows, row)
+	}
+	for col := firstResourceColumn; col < lastResourceColumn; col += 3 {
+		alignTableArrows(rows, col+1)
+		alignTableArrows(rows, col+2)
 	}
 	t := liptable.New().Headers(h...).Rows(rows...).Border(lipgloss.RoundedBorder())
 	if cfg.Width != nil {
@@ -198,7 +215,7 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			if row == liptable.HeaderRow {
 				return style.Bold(true).Foreground(lipgloss.Color("#d75fd7"))
 			}
-			if col > 0 && col < 7 {
+			if col > 0 && col < firstResourceColumn {
 				return style.Foreground(lipgloss.Color("#00afaf"))
 			}
 			return style
@@ -213,12 +230,25 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		return table
 	}
 	var notes strings.Builder
-	for _, scan := range report.Scans {
+	for _, i := range visible {
+		scan := report.Scans[i]
 		if text := scanNotes(scan, tableQuantity); text != "" {
 			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
 		}
 	}
-	return table + "\nDiff columns: total request change across current pods; parentheses: change per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+	return table + "\nDiff columns: total request change across current pods. Requests and limits are per container. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+}
+
+func alignTableArrows(rows [][]string, col int) {
+	width := 0
+	for _, row := range rows {
+		width = max(width, strings.Index(row[col], " -> "))
+	}
+	for _, row := range rows {
+		if index := strings.Index(row[col], " -> "); index >= 0 {
+			row[col] = strings.Repeat(" ", width-index) + row[col]
+		}
+	}
 }
 
 func scanNotes(scan model.Scan, format func(model.ResourceType) func(float64) string) string {

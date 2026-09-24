@@ -30,12 +30,12 @@ func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
 		pods                 int
 		wantDiff, wantChange string
 	}{
-		{"multiple pods", .004, .004 + 1.0417997505975267/6, 6, "+1042m", "(+174m) 4m -> 178m"},
-		{"subtraction rounding", .1, .027, 1, "-73m", "(-73m) 100m -> 27m"},
-		{"fractional recommendation", .1, .02755247433231, 1, "-72m", "(-72m) 100m -> 28m"},
-		{"whole cores", 2, 2 - 1.45744752566769, 1, "-1457m", "(-1457m) 2000m -> 543m"},
-		{"round to nearest millicore", 2, .54255, 1, "-1457m", "(-1457m) 2000m -> 543m"},
-		{"display zero", .1, .1 - .0000001, 1, "+0m", "(+0m) 100m -> 100m"},
+		{"multiple pods", .004, .004 + 1.0417997505975267/6, 6, "+1042m", "4m -> 178m"},
+		{"subtraction rounding", .1, .027, 1, "-73m", "100m -> 27m"},
+		{"fractional recommendation", .1, .02755247433231, 1, "-72m", "100m -> 28m"},
+		{"whole cores", 2, 2 - 1.45744752566769, 1, "-1457m", "2000m -> 543m"},
+		{"round to nearest millicore", 2, .54255, 1, "-1457m", "2000m -> 543m"},
+		{"display zero", .1, .1 - .0000001, 1, "+0m", "100m -> 100m"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			report := fixture()
@@ -59,8 +59,8 @@ func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
 			if row[7] != tt.wantDiff || row[8] != tt.wantChange || row[9] != "2000m -> 1235m" {
 				t.Fatalf("unexpected CPU cells: %v", row[7:10])
 			}
-			if !strings.Contains(text, "total request change across current pods; parentheses: change per container") {
-				t.Fatal("total versus per-container diffs not explained")
+			if !strings.Contains(text, "total request change across current pods. Requests and limits are per container") || strings.Contains(text, "parentheses") {
+				t.Fatal("total diffs versus per-container settings not explained")
 			}
 			after, err := json.Marshal(report)
 			if err != nil || string(after) != string(before) {
@@ -107,7 +107,7 @@ func TestTableMemoryAndReleaseEvidencePrecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"(+83Mi) 100Mi -> 183Mi", "CPU aggregate 1235m", "memory peak 183Mi"} {
+	for _, want := range []string{"100Mi -> 183Mi", "CPU aggregate 1235m", "memory peak 183Mi"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing rounded quantity %s in %s", want, text)
 		}
