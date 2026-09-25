@@ -52,7 +52,7 @@ func NewRoot() *cobra.Command {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), Version)
 		return err
 	}})
-	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"), explainCommand())
+	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"), explainCommand(), completionCommand())
 	return root
 }
 

@@ -12,19 +12,17 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
-	github.com/kedify/recommender v0.0.0-20260909124919-6eb238622aed
+	github.com/kedify/recommender v0.2.1-0.20260925131000-48832c590dc3
 	github.com/muesli/cancelreader v0.2.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
+	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 )
-
-// Local development: includes the unreleased OOM and memory-leak extensions.
-replace github.com/kedify/recommender => ../recommender
 
 require (
 	charm.land/bubbletea/v2 v2.0.8 // indirect
@@ -74,7 +72,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
