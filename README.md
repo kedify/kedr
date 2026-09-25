@@ -3,10 +3,7 @@
 KEDR is a fast, standalone Kubernetes resource recommender written entirely in Go. It reads workload configuration from Kubernetes, queries a Prometheus-compatible metrics service, and produces CPU and memory request/limit recommendations.
 
 KEDR uses [`github.com/kedify/recommender/analysis`](https://github.com/kedify/recommender)
-for all recommendation calculations through `analysis.Analyze`. Its CLI and report
-layout originated as a clean-room port of [Robusta KRR](https://github.com/robusta-dev/krr),
-but its recommendation semantics are no longer KRR-compatible. It has no Python
-runtime or source dependency.
+for all recommendation calculations through `analysis.Analyze`. 
 
 ## Demo
 
@@ -45,13 +42,6 @@ Or build from source:
 ```sh
 go build -o bin/kedr ./cmd/kedr
 ./bin/kedr simple
-```
-
-Many existing KRR flags still work, including underscore aliases:
-
-```sh
-alias krr=kedr
-krr simple --namespace default --formatter json --logtostderr
 ```
 
 Use `kedr simple --help` or `kedr simple_limit --help` for the complete option reference.
@@ -146,13 +136,6 @@ and bounds. `simple` retains CPU limits; `explain` does not introduce limit remo
 - Both use selected-release peak memory with `--memory-buffer-percentage`
   (default 15%), and a memory limit/request ratio of 1, subject to retained settings
   and the analyzer's safety guards.
-
-KEDR maps its existing CPU/memory minimums (10 millicores / 100 MiB), request
-percentile, memory buffer, OOM increase, and sample-count flags into the shared
-policy. CPU headroom is 1. Other bounds and material-change thresholds come from
-the module. No extra KRR percentile interpolation, sizing, rounding, or floors run
-after `Analyze`; exact recommendations are retained, with CPU converted from the
-module's millicores to report cores. Display formatting does not change stored values.
 
 Known unset requests and limits can receive initial values below the analyzer's
 minimum-change thresholds. These thresholds apply only to existing numeric
@@ -312,19 +295,6 @@ documented rollback limitations.
 
 ## Reports
 
-The default terminal table uses the Charm Bubble Tea, Bubbles, and Lip Gloss stack. Non-terminal output never contains animation or ANSI escapes.
-
-CPU Diff and Memory Diff use separate color scales over the visible rows. Savings
-range from muted grey-green to bright green; increases range from muted warm grey
-through orange to bright red. The largest change of each sign is bold. Scales use
-the displayed total request change across current pods, excluding unset/unknown allocations,
-unchanged displayed values, and zero totals. Remaining numeric diffs outside the
-scale are grey. Equal changes share
-a shade; a single change of one sign uses the brightest shade.
-Colors adapt to the terminal's supported palette. `--no-color` or any nonempty
-`NO_COLOR` value disables all terminal colors, including headers and the progress
-indicator. Redirected output and saved table files contain no ANSI styling.
-
 Table resource quantities are rounded to whole numbers. CPU always uses the
 nearest millicore (`m`), including values above one core (`542.55m` becomes `543m`);
 memory uses binary units.
@@ -352,10 +322,6 @@ table/HTML output also identifies sizing versus comparison releases and exposes
 diagnostic reasons and notices. Insufficient history includes observed and required
 hours. Credentials remain
 masked in serialized configuration.
-
-## Deliberately excluded
-
-KEDR does not contain Robusta SaaS publishing, a web UI, HolmesGPT, Slack delivery, Azure Blob/Teams delivery, the KRR enforcer, Helm charts, or runtime-loaded custom Python strategies and formatters. Flags belonging to these removed features are rejected as unknown.
 
 ## Development
 
