@@ -8,19 +8,44 @@ layout originated as a clean-room port of [Robusta KRR](https://github.com/robus
 but its recommendation semantics are no longer KRR-compatible. It has no Python
 runtime or source dependency.
 
-## Install and run
+## Demo
+
+[![KEDR terminal demo: cluster recommendations, explain row 25, and OOMKill-aware memory sizing](docs/images/kedr-demo.gif)](docs/images/kedr-demo.gif)
+
+Recorded against a live Kubernetes context with these commands (collection is
+sped up 3×; results are shown as returned):
 
 ```sh
-# During development, keep kedr and recommender in sibling directories.
+./bin/kedr simple
+./bin/kedr explain 25
+./bin/kedr simple -n parca --use-oomkill-data
+```
+
+`explain 25` generates the HTML report for the `kedify-agent` workload's `manager`
+container in this scan, with CPU/memory charts and the reasoning behind each
+recommendation. [View the report screenshot](docs/images/kedify-agent-explain.png).
+Row numbers belong to the saved scan and may differ in your cluster.
+
+KEDR can also detect **OOMKills and recommend a memory increase** with
+`--use-oomkill-data`. In this demo, OOM evidence raises Parca's recommended memory
+request from **2,588 MiB to 3,882 MiB**, using the default 50% OOM buffer.
+KEDR reports recommendations; it does not apply resource changes to the cluster.
+
+## Install and run
+
+Homebrew (available after the first release publishes the cask):
+
+```sh
+brew install --cask kedify/tap/kedr
+kedr simple
+```
+
+Or build from source:
+
+```sh
 go build -o bin/kedr ./cmd/kedr
 ./bin/kedr simple
 ```
-
-This checkout uses a local `replace github.com/kedify/recommender => ../recommender`
-to include the unreleased OOM/leak and decision-trace extensions. Before publishing a standalone
-release, publish and pin a recommender version containing those changes and remove
-the replacement. `go install ...@version` is not supported for this development
-checkout's module configuration.
 
 Many existing KRR flags still work, including underscore aliases:
 
@@ -354,6 +379,9 @@ go test -run '^$' -bench 'Benchmark(NativeHistoryDecode|HistoryRoundTrips)$' -be
 
 See [performance measurements](docs/performance.md) for the bottlenecks, changes,
 and a read-only cluster benchmark.
+
+See [release and Homebrew setup](docs/releases.md) for the tap repository,
+publishing token, and release workflow.
 
 ## License and attribution
 

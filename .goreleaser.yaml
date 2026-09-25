@@ -12,11 +12,34 @@ builds:
     goarch: [amd64, arm64]
 
 archives:
-  - formats: [tar.gz]
+  - id: kedr
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
     files: [LICENSE, NOTICE, README.md]
+
+homebrew_casks:
+  - name: kedr
+    ids: [kedr]
+    binaries: [kedr]
+    homepage: https://github.com/kedify/kedr
+    description: Kubernetes CPU and memory resource recommender
+    skip_upload: auto
+    repository:
+      owner: kedify
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    hooks:
+      post:
+        # Release binaries are not yet signed and notarized with Apple.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kedr"]
+          end
+
+release:
+  prerelease: auto
 
 checksum:
   name_template: checksums.txt
