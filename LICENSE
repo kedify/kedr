@@ -1,22 +1,189 @@
-MIT License
+Kedify Commercial Subscription License
+Version 1.0
 
-Copyright (c) 2023 Robusta
-Copyright (c) 2026 Kedify
+Copyright Kedify Inc. All rights reserved in Kedify-owned material.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Parties and scope. This license is between Kedify Inc. ("Kedify") and the
+person or legal entity exercising the rights below ("you"). A person acting
+for an entity must have authority to bind it. "Software" means the
+Kedify-owned software and related documentation identified as covered by this
+license and provided or expressly authorized by Kedify for your use. It
+includes covered portions of source code, executable code, container images
+and updates. It excludes separately licensed material identified in license
+notices. By accepting this license or exercising rights it grants, you agree
+to its terms. If you do not agree, you may not exercise those rights. Access
+to a repository, an account or a copy of the Software does not by itself
+establish a subscription or authorize production use. This does not restrict
+rights you independently hold under another applicable license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. Commercial entitlement. An "Order" is an order form, online subscription
+confirmation or marketplace order accepted by you and Kedify that identifies
+the customer, covered products or features, subscription period and usage
+limits. While your Order is active and your production rights have not been
+suspended or terminated under section 6, Kedify grants you a worldwide,
+nonexclusive, nontransferable and nonsublicensable right to install, copy and
+run the covered Software within those limits for your own operations.
+Installation and operation may be in your own environment, including offline
+operation, within the covered scope. This includes supporting applications and
+services you operate for your customers, provided you do not make the Software
+itself or its autoscaling, recommendation or other covered functionality
+available to them as a separate service.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Your employees and contractors may exercise these rights solely on your behalf
+and under your responsibility. Affiliates, resellers and managed-service
+providers require express coverage in the Order. Source compilation and
+modification for production are permitted only if the Order or the Public
+Source Addendum expressly grants those rights. An entitlement covers only the
+identified products and does not license all Kedify repositories, internal
+tools or features.
+
+3. Evaluation and demonstrations. Without a paid subscription, you may
+install, copy and run a copy expressly supplied or designated by Kedify for
+evaluation for 30 consecutive calendar days from the date specified in
+Kedify's trial confirmation, or, if none is specified, from your first
+execution of that copy. One evaluation period is permitted per organization
+and covered product; obtaining another version or creating another account
+does not restart it. Kedify may extend or vary the evaluation in a written
+confirmation.
+
+Evaluation permits internal testing and demonstrations to your personnel to
+decide whether to purchase Kedify. It does not permit operational reliance,
+provision of a service to another person or use to deliver paid consulting
+results. Use with live workloads or for actual operational decisions requires
+a written trial confirmation expressly identifying that permitted scope.
+Recommendations used to set real resource configurations, purchase
+infrastructure capacity or make other operational decisions count as
+production use even if the Software is read-only, runs offline or makes no
+automatic changes. Deciding whether to purchase Kedify does not itself count
+as production use.
+
+Kedify and persons acting under its internal authorization may develop, test
+and demonstrate its Software as authorized. Partners may demonstrate the
+Software to prospects within the scope and duration of a written Kedify
+partner or demonstration authorization, without purchasing a customer
+subscription for those demonstrations. An authorization to demonstrate does
+not allow the prospect to operate the Software independently after the
+demonstration.
+
+4. Restrictions. Except as expressly permitted by this license, an Order, the
+Public Source Addendum or applicable law that cannot be excluded, you may not
+distribute, sublicense, sell, rent, lease or transfer the Software; supply its
+functionality to third parties as a hosted service, managed service or service
+bureau; incorporate it into a product you provide to others; or use it to
+develop or provide a competing product or service. You may not circumvent
+entitlement or license controls, remove legal notices, or use Kedify's
+trademarks except for truthful identification allowed by applicable law. These
+restrictions govern use of the covered Software and do not claim control over
+independently created software that does not use it.
+
+5. Ownership and third-party rights. The Software is licensed, not sold.
+Kedify retains all rights in its own Software, including its own
+modifications, and reserves all rights not expressly granted. This license
+grants no ownership of Kedify intellectual property. You retain ownership of
+your original private modifications without acquiring ownership of the
+underlying Software; their use remains subject to this license and any
+required active entitlement. This license does not transfer ownership of your
+data or unrelated works to Kedify. Before Kedify accepts submitted code for
+inclusion, the relevant rights holder must sign a separate contribution
+agreement assigning the submitted original code to Kedify. This license does
+not itself assign another person's copyright or transfer third-party rights.
+
+Third-party material remains subject to its identified licenses, which control
+that material if these terms conflict. Nothing here limits rights already
+granted under an applicable third-party or prior open-source license. For the
+duration and scope of the rights granted here, Kedify grants a nonexclusive
+patent license under claims it is entitled to license that are necessarily
+infringed by the covered Software as supplied by Kedify. This grant also
+covers permitted modifications to the extent they continue to practice those
+same claims; it does not cover additional claims infringed solely because of
+your modifications or combinations. No trademark license is granted.
+
+6. Expiration and termination. Production rights end when the relevant
+subscription expires or terminates. Evaluation and demonstration rights end at
+the expiration of their authorized periods. Suspension, termination and cure
+procedures in a controlling customer agreement or Order prevail under section
+8.
+
+Where those documents do not specify a different procedure, Kedify may suspend
+production rights by written notice when the applicable fees are more than 30
+days overdue. Suspension ends when the overdue fees are paid or Kedify
+confirms another resolution in writing, provided the Order remains active and
+no other suspension or termination ground applies. Kedify may terminate rights
+by written notice for a curable material breach if it remains uncured 30 days
+after written notice of the breach, and immediately by written notice for a
+material breach that cannot be cured. A cure period does not extend an expired
+entitlement or authorize use beyond its scope.
+
+When your rights end, stop the affected use and remove the affected Software
+from active systems. You may retain one inactive archival copy solely for
+legal recordkeeping and inaccessible backup copies until their ordinary
+deletion, provided they are not restored for use without authorization. This
+does not require deletion of your data or materials you independently have the
+right to retain. Ownership, reserved rights, restrictions applicable to
+retained copies and liability provisions survive. An express public-source
+inspection right and independent third-party rights survive according to their
+own terms.
+
+7. Warranty and liability. Any support, service levels, warranties, remedies
+and liability allocation expressly agreed in the applicable customer agreement
+control. Subject to those agreed terms, the following provisions apply to the
+fullest extent permitted by applicable law.
+
+The Software is provided "AS IS" and "AS AVAILABLE," without express or
+implied warranties, including merchantability, fitness for a particular
+purpose and noninfringement. Kedify excludes liability for lost profits, lost
+data and indirect or consequential damages.
+
+For evaluation, demonstration and other permissions expressly granted without
+a paid subscription under this license or the Public Source Addendum, Kedify
+has no liability for damages arising out of or relating to that access or use,
+whether in contract, tort or otherwise.
+
+For paid use, Kedify's aggregate liability under this license is limited to
+the fees actually paid to Kedify for the affected Software during the 12
+months preceding the claim.
+
+These liability exclusions and limitations apply only to Kedify's liability.
+They do not limit your payment obligations or remedies legally available to
+Kedify for unauthorized use, copying or distribution. Nothing in this section
+excludes or limits liability that applicable law does not permit to be
+excluded or limited.
+
+8. Precedence and changes. A separate customer agreement or product EULA
+accepted by you and Kedify for the same Software, together with its
+incorporated Orders and amendments, controls to the extent of a conflict with
+this license or the Public Source Addendum. Those documents retain the
+precedence established by their own terms. They are amended only in the manner
+they require; publication or use of this license does not itself amend them.
+Where no such separate agreement applies, an accepted Order prevails over the
+Public Source Addendum, which prevails over this license, to the extent of an
+actual conflict.
+
+For Software Kedify expressly supplies under this license, this license and
+the Public Source Addendum replace Kedify's general website Terms of Use
+concerning that Software's use and licensing, including warranties, liability
+and dispute terms for that Software. This replacement does not apply where the
+website terms form part of a controlling separate customer agreement or
+product EULA; that agreement's amendment requirements govern. Website access
+and separately supplied hosted services otherwise remain subject to their
+applicable terms. Third-party licenses and earlier open-source grants remain
+unaffected.
+
+A new license version applies only when validly agreed or accompanying a newly
+obtained version under its stated terms. Publication alone does not change the
+terms for an already obtained version or revoke earlier grants. An amendment
+to a controlling agreement must follow that agreement's amendment procedure.
+
+9. Governing law and general terms. The governing law and dispute procedures
+in a controlling customer agreement or Order apply. Otherwise, this license is
+governed by California law, excluding its conflict-of-laws rules, and
+applicable United States federal law. Disputes may be brought before a court
+with jurisdiction under applicable law. This license does not require
+arbitration or designate an exclusive court venue.
+
+Notices under this license must be in writing and delivered to the notice
+contact in the applicable agreement or Order, or otherwise to a business
+contact designated by the receiving party for the covered Software. A notice
+period begins when the notice is received. If a provision is unenforceable,
+the remaining provisions continue to apply to the extent permitted by law. A
+failure to enforce a provision does not waive the right to enforce it later.

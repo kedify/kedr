@@ -385,8 +385,9 @@ publishing token, and release workflow.
 
 ## License and attribution
 
-KEDR's own code is MIT licensed; see [NOTICE](NOTICE) and [LICENSE](LICENSE).
+KEDR's Kedify-owned code is covered by the Kedify Commercial Subscription License;
+see [LICENSE](LICENSE). Third-party attribution and license notices are in
+[NOTICE](NOTICE).
 The linked Kedify Recommender module has separate commercial/public-source terms;
-see that module's `LICENSE` and `PUBLIC_SOURCE_LICENSE`. Its inclusion does not
-make the dependency MIT licensed. Include applicable dependency license notices
-when distributing binaries.
+see that module's `LICENSE` and `PUBLIC_SOURCE_LICENSE`. Include applicable
+dependency license notices when distributing binaries.

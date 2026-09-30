@@ -4,17 +4,20 @@ KRR commit d1ccf01 and used under the MIT License.
 
 Resource recommendation calculations now use github.com/kedify/recommender;
 KEDR no longer promises KRR-compatible recommendation semantics. That dependency
-is governed by its own LICENSE and PUBLIC_SOURCE_LICENSE, not KEDR's MIT license.
+is governed by its own LICENSE and PUBLIC_SOURCE_LICENSE.
 
 KEDR is not Robusta SaaS and does not include Robusta's web UI, HolmesGPT,
 publishing integrations, enforcer, or Helm chart.
 
 The calculating-title shimmer in internal/ui/shimmer.go is adapted from
 github.com/handleui/shimmer, commit 27767358e0b0, Copyright (c) 2025 @handleui.
-Used under the following MIT license:
+
+The Robusta KRR and shimmer material identified above is used under the following
+MIT license:
 
 MIT License
 
+Copyright (c) 2023 Robusta
 Copyright (c) 2025 @handleui
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
