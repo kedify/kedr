@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedr-memory-leak-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memory-leak-demo
+  namespace: kedr-memory-leak-demo
+data:
+  leak.py: |
+    """Keep touching and retaining more anonymous memory for a KEDR demo."""
+
+    import os
+    import time
+
+    MIB = 1024 * 1024
+    initial_mib = int(os.environ.get("INITIAL_MIB", "64"))
+    step_mib = int(os.environ.get("STEP_MIB", "12"))
+    step_seconds = int(os.environ.get("STEP_SECONDS", "1800"))
+
+    if min(initial_mib, step_mib, step_seconds) <= 0:
+        raise ValueError("INITIAL_MIB, STEP_MIB, and STEP_SECONDS must be positive")
+
+    retained = []
+    total_mib = 0
+
+    def allocate(mib):
+        global total_mib
+        block = bytearray(mib * MIB)
+        # Touch every page so the allocation appears in the container's
+        # working set, even on systems that lazily commit zeroed pages.
+        for offset in range(0, len(block), 4096):
+            block[offset] = 1
+        retained.append(block)
+        total_mib += mib
+        print(f"retained {total_mib} MiB in {len(retained)} blocks", flush=True)
+
+    allocate(initial_mib)
+    next_step = time.monotonic() + step_seconds
+    while True:
+        time.sleep(max(0, next_step - time.monotonic()))
+        allocate(step_mib)
+        next_step += step_seconds
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-leak-demo
+  namespace: kedr-memory-leak-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: memory-leak-demo
+  template:
+    metadata:
+      labels:
+        app: memory-leak-demo
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: memory-leak-demo
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/leak.py"]
+          env:
+            - name: INITIAL_MIB
+              value: "64"
+            - name: STEP_MIB
+              value: "12"
+            - name: STEP_SECONDS
+              value: "1800"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 1Gi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: memory-leak-demo

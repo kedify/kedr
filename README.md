@@ -217,6 +217,8 @@ limit, then the current request, then qualifying usage. Repeated events do not
 compound the multiplier. Unknown failed limits block reductions. Existing resource
 bounds and change thresholds still apply, including the default 100Mi minimum.
 `--oom-memory-buffer-percentage` defaults to 50 (a multiplier of 1.5).
+Try the [OOM kill demo](examples/oom-kill/README.md) to generate an event with a
+128 MiB limit.
 With this flag enabled, the table ends with `OOMKilled`, showing the latest
 selected event as `Yes (59s ago)`, `Yes (5m ago)`, or a local clock time for events
 older than 15 minutes. Earlier days include `yesterday` or the date. Rows with an
@@ -234,12 +236,24 @@ It is off by default, does not change sizing, and uses its own six-hour minimum 
 default. A customized longer sizing guard can still block sizing while leak
 detection reports potential growth. A potential leak is
 not a diagnosis; useful allocations and growing caches can look similar.
+See the [memory leak demo](examples/memory-leak/README.md) for a workload and manifests that exercise this detector.
 
 In table output, the flag adds a `Potential Mem Leak` column. Positive findings appear as red `yes` when color is enabled,
 and remain visible even when no resource change is recommended.
 See the [memory leak demo](examples/memory-leak/README.md) for a workload and manifests that exercise this detector.
 
 ## Workloads and metrics
+
+The [leader election demo](examples/leader-election/README.md) runs three replicas
+with one Lease holder using more CPU and memory. Leadership is contested again
+when its ten-minute term ends or its pod is deleted.
+
+The [high variance demo](examples/high-variance/README.md) runs one pod with three
+containers that rapidly vary memory, CPU, or both, with container and pod-level
+resource settings.
+
+The [CPU throttling demo](examples/cpu-throttle/README.md) continuously calculates
+digits of π under a 20m CPU limit, producing cAdvisor throttling metrics.
 
 Discovery supports Deployment, StatefulSet, DaemonSet, Job, CronJob, GroupedJob,
 Argo Rollout, and standalone pods. StrimziPodSet and OpenShift DeploymentConfig are intentionally

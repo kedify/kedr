@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedr-high-variance-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: high-variance-demo
+  namespace: kedr-high-variance-demo
+data:
+  workload.py: |
+    """Cycle resident memory and CPU load through deliberately uneven levels."""
+
+    import mmap
+    import os
+    import time
+
+    MIB = 1024 * 1024
+    MEMORY_MIB = (10, 150, 20, 300, 40, 240)
+    CPU_MCPU = (30, 650, 70, 800, 120, 500)
+    CPU_SLICE_SECONDS = 0.1
+
+    profile = os.environ["PROFILE"]
+    if profile not in ("memory", "cpu", "both"):
+        raise ValueError("PROFILE must be memory, cpu, or both")
+    phase_seconds = float(os.environ.get("PHASE_SECONDS", "20"))
+    if phase_seconds <= 0:
+        raise ValueError("PHASE_SECONDS must be positive")
+
+    block = None
+
+    def set_memory(mib):
+        global block
+        if block is not None:
+            block.close()
+        size = mib * MIB
+        block = mmap.mmap(
+            -1, size, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS,
+            prot=mmap.PROT_READ | mmap.PROT_WRITE,
+        )
+        # Commit every page so the full allocation appears in resident memory.
+        for offset in range(0, size, 4096):
+            block[offset] = 1
+
+    def use_cpu(mcpu, deadline):
+        duty = mcpu / 1000
+        while time.monotonic() < deadline:
+            start = time.monotonic()
+            busy_until = min(deadline, start + CPU_SLICE_SECONDS * duty)
+            while time.monotonic() < busy_until:
+                pass
+            sleep_until = min(deadline, start + CPU_SLICE_SECONDS)
+            time.sleep(max(0, sleep_until - time.monotonic()))
+
+    while True:
+        for mib, mcpu in zip(MEMORY_MIB, CPU_MCPU):
+            if profile in ("memory", "both"):
+                set_memory(mib)
+            deadline = time.monotonic() + phase_seconds
+            print(
+                f"profile={profile} memory={mib if profile != 'cpu' else '-'} MiB "
+                f"cpu={mcpu if profile != 'memory' else '-'}m",
+                flush=True,
+            )
+            if profile in ("cpu", "both"):
+                use_cpu(mcpu, deadline)
+            else:
+                time.sleep(max(0, deadline - time.monotonic()))
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: high-variance-demo
+  namespace: kedr-high-variance-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: high-variance-demo
+  template:
+    metadata:
+      labels:
+        app: high-variance-demo
+    spec:
+      automountServiceAccountToken: false
+      resources:
+        requests:
+          cpu: 300m
+          memory: 256Mi
+        limits:
+          cpu: "2"
+          memory: 768Mi
+      containers:
+        - name: memory-variance
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/workload.py"]
+          env:
+            - name: PROFILE
+              value: memory
+          resources:
+            requests:
+              cpu: 25m
+              memory: 96Mi
+            limits:
+              cpu: 250m
+              memory: 384Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+        - name: cpu-variance
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/workload.py"]
+          env:
+            - name: PROFILE
+              value: cpu
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: 900m
+              memory: 96Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+        - name: cpu-memory-variance
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/workload.py"]
+          env:
+            - name: PROFILE
+              value: both
+          resources:
+            requests:
+              cpu: 100m
+              memory: 96Mi
+            limits:
+              cpu: 900m
+              memory: 384Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: high-variance-demo

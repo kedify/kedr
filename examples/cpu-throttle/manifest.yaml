@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedr-cpu-throttle-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-throttle-demo
+  namespace: kedr-cpu-throttle-demo
+data:
+  pi.py: |
+    """Continuously calculate decimal digits of pi to exhaust a tiny CPU quota."""
+
+    from math import isqrt
+    from time import monotonic
+
+    CUBED_CONSTANT = 640320**3 // 24
+    FIRST_DIGITS = 100
+    STEP_DIGITS = 50
+    MAX_DIGITS = 2000
+    REPORT_SECONDS = 30
+
+
+    def binary_split(start, end):
+        """Evaluate the Chudnovsky series with integer binary splitting."""
+        if end - start == 1:
+            if start == 0:
+                p = q = 1
+            else:
+                p = (6 * start - 5) * (2 * start - 1) * (6 * start - 1)
+                q = start**3 * CUBED_CONSTANT
+            t = p * (13591409 + 545140134 * start)
+            return p, q, -t if start % 2 else t
+
+        middle = (start + end) // 2
+        p1, q1, t1 = binary_split(start, middle)
+        p2, q2, t2 = binary_split(middle, end)
+        return p1 * p2, q1 * q2, q2 * t1 + p1 * t2
+
+
+    def pi_digits(count):
+        """Return the leading 3 and count digits after the decimal point."""
+        _, q, t = binary_split(0, count // 14 + 2)
+        guard_digits = 10
+        scale = 10 ** (count + guard_digits)
+        sqrt_scaled = isqrt(10005 * scale * scale)
+        pi_scaled = 426880 * sqrt_scaled * q // t
+        return str(pi_scaled // 10**guard_digits)
+
+
+    target = FIRST_DIGITS
+    printed = 0
+    next_report = 0.0
+    calculations = 0
+    while True:
+        digits = pi_digits(target)
+        calculations += 1
+        if monotonic() < next_report:
+            continue  # Keep the CPU busy between log lines; never sleep.
+
+        if printed == 0:
+            print(f"pi = {digits[0]}.{digits[1:]} ({calculations} calculations)", flush=True)
+        else:
+            new_digits = digits[1 + printed:1 + target]
+            print(f"pi digits {printed + 1}-{target}: {new_digits} "
+                  f"({calculations} calculations)", flush=True)
+
+        printed = target
+        if target == MAX_DIGITS:
+            print("restarting at 100 digits to keep memory bounded", flush=True)
+            target = FIRST_DIGITS
+            printed = 0
+        else:
+            target = min(target + STEP_DIGITS, MAX_DIGITS)
+        calculations = 0
+        next_report = monotonic() + REPORT_SECONDS
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-throttle-demo
+  namespace: kedr-cpu-throttle-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-throttle-demo
+  template:
+    metadata:
+      labels:
+        app: cpu-throttle-demo
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: cpu-throttle-demo
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/pi.py"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 20m
+              memory: 128Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: cpu-throttle-demo
