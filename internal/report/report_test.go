@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/kedr/internal/resource"
@@ -22,6 +23,65 @@ func fixture() model.Report {
 	rec := model.Recommendation{Requests: map[model.ResourceType]model.RecommendationValue{model.CPU: {Value: model.Number(.006), Severity: model.SeverityOK}, model.Memory: {Value: model.Number(500), Severity: model.SeverityCritical}}, Limits: map[model.ResourceType]model.RecommendationValue{model.CPU: {Value: model.Unknown(), Severity: model.SeverityUnknown}, model.Memory: {Value: model.Number(500), Severity: model.SeverityCritical}}, Info: map[model.ResourceType]*string{model.CPU: nil, model.Memory: nil}}
 	cluster := "mock"
 	return model.Report{Scans: []model.Scan{{Object: model.Object{Cluster: &cluster, Name: "app", Container: "main", Pods: []model.Pod{{Name: "p"}, {Name: "old", Deleted: true}}, HPA: nil, Namespace: "default", Kind: "Deployment", Allocations: a, Warnings: []string{}, Labels: nil, Annotations: nil}, Recommended: rec, Severity: model.SeverityCritical}}, Resources: []string{"cpu", "memory"}, Strategy: model.StrategyData{Name: "simple", Settings: map[string]any{}}, Errors: []map[string]any{}, ClusterSummary: map[string]any{}, Config: cfg}
+}
+
+func TestTableShowsShortHistoryWarningOnlyWhenAllSizingIsBlocked(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	cfg := config.Default("simple")
+	cfg.HistoryDuration = 48
+	cfg.MinimumHistoryHours = 2.5
+	cfg.Explain = true
+	r := fixture()
+	r.Description = "full sizing description"
+	blocked := analysis.ResourceAnalysis{Resource: analysis.ResourceCPU, DataQuality: analysis.DataQuality{Status: analysis.DataQualityUnavailable, Reasons: []analysis.Reason{analysis.ReasonInsufficientHistory}}}
+	r.Scans[0].Analysis = &analysis.Output{Results: []analysis.ResourceAnalysis{blocked, {Resource: analysis.ResourceMemory, DataQuality: blocked.DataQuality}}}
+	r.Scans = append(r.Scans, r.Scans[0])
+	r.Scans[1].Object.Name = "second"
+	want := "Kedify Recommender — simple\n\nQuery history: 48 hours; minimum sizing history: 2.5 hours; native CPU/memory scrape samples\nobserved history required for sizing is shorter than 2.5 hours, either wait or use shorter --minimum-history-hours"
+	plain, err := Render(r, cfg, false)
+	if err != nil || plain != want {
+		t.Fatalf("short-history table = %q, %v", plain, err)
+	}
+	colored, err := Render(r, cfg, true)
+	if err != nil || ansi.Strip(colored) != want || !strings.Contains(colored, "255;159;28") {
+		t.Fatalf("short-history warning is not orange: %q, %v", colored, err)
+	}
+	cfg.NoColor = true
+	noColor, err := Render(r, cfg, true)
+	if err != nil || noColor != want {
+		t.Fatalf("--no-color warning = %q, %v", noColor, err)
+	}
+	cfg.NoColor = false
+	cfg.Format = "json"
+	jsonReport, err := Render(r, cfg, false)
+	if err != nil || !strings.Contains(jsonReport, "full sizing description") || !strings.Contains(jsonReport, "second") {
+		t.Fatalf("structured report lost detail: %q, %v", jsonReport, err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		change func(*model.Report)
+	}{
+		{"one resource can recommend", func(r *model.Report) {
+			r.Scans[1].Analysis.Results[1].Recommendations = []analysis.Recommendation{{Setting: analysis.SettingRequests}}
+		}},
+		{"one resource blocked for another reason", func(r *model.Report) {
+			r.Scans[1].Analysis.Results[1].DataQuality.Reasons = []analysis.Reason{analysis.ReasonMissingUsage}
+		}},
+		{"one scan lacks analysis", func(r *model.Report) { r.Scans[1].Analysis = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other := r
+			other.Scans = append([]model.Scan(nil), r.Scans...)
+			out := *r.Scans[1].Analysis
+			out.Results = append([]analysis.ResourceAnalysis(nil), out.Results...)
+			other.Scans[1].Analysis = &out
+			tc.change(&other)
+			if ShortHistoryBlocked(other.Scans) {
+				t.Fatal("warning shown when short history is not the sole blocker")
+			}
+		})
+	}
 }
 
 func TestTableCPUQuantitiesAndDiffs(t *testing.T) {
