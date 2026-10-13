@@ -1,6 +1,6 @@
 .PHONY: build test test-race fmt fmt-check vet lint vuln python-free verify
 
-GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION ?= v1.8.0
 
 build:
