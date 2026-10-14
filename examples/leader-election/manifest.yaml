@@ -1,0 +1,292 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedr-leader-election-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: leader-election-demo
+  namespace: kedr-leader-election-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: leader-election-demo
+  namespace: kedr-leader-election-demo
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["leader-election-demo"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: leader-election-demo
+  namespace: kedr-leader-election-demo
+subjects:
+  - kind: ServiceAccount
+    name: leader-election-demo
+    namespace: kedr-leader-election-demo
+roleRef:
+  kind: Role
+  name: leader-election-demo
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leader-election-demo
+  namespace: kedr-leader-election-demo
+data:
+  leader.py: |
+    """Make one Lease holder use more CPU and resident memory."""
+
+    import hashlib
+    import json
+    import mmap
+    import os
+    import random
+    import signal
+    import ssl
+    import threading
+    import time
+    from datetime import datetime, timezone
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    NAME = "leader-election-demo"
+    IDENTITY = os.environ["POD_NAME"]
+    NAMESPACE = os.environ["POD_NAMESPACE"]
+    HOST = os.environ["KUBERNETES_SERVICE_HOST"]
+    if ":" in HOST and not HOST.startswith("["):
+        HOST = f"[{HOST}]"
+    PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    URL = (f"https://{HOST}:{PORT}/apis/coordination.k8s.io/v1/"
+           f"namespaces/{NAMESPACE}/leases")
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    TLS = ssl.create_default_context(cafile=CA_PATH)
+
+    LEASE_SECONDS = 20
+    RENEW_SECONDS = 5
+    TERM_SECONDS = 600
+    LEADER_MIB = 128
+    MIB = 1024 * 1024
+    stop = threading.Event()
+    memory = None
+    leader = False
+    term_started = 0.0
+    confirmed_until = 0.0
+
+
+    def shutdown(_signum, _frame):
+        stop.set()
+
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+
+    def request(method, path="", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        with open(TOKEN_PATH, encoding="utf-8") as token_file:
+            token = token_file.read().strip()
+        headers = {"Authorization": "Bearer " + token}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        call = Request(URL + path, data=data, headers=headers, method=method)
+        try:
+            with urlopen(call, context=TLS, timeout=3) as response:
+                return response.status, json.load(response)
+        except HTTPError as error:
+            if error.code in (404, 409):
+                return error.code, None
+            raise RuntimeError(f"Kubernetes API {method} returned HTTP {error.code}") from error
+
+
+    def now_rfc3339():
+        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+    def expired(spec):
+        renewed = spec.get("renewTime") or spec.get("acquireTime")
+        if not renewed:
+            return True
+        renewed_at = datetime.fromisoformat(renewed.replace("Z", "+00:00"))
+        return time.time() >= renewed_at.timestamp() + spec.get("leaseDurationSeconds", LEASE_SECONDS)
+
+
+    def promote():
+        global memory, leader, term_started
+        if leader or stop.is_set():
+            return
+        block = mmap.mmap(-1, LEADER_MIB * MIB)
+        for offset in range(0, LEADER_MIB * MIB, 4096):
+            block[offset] = 1  # Commit each page so working-set metrics show the allocation.
+        if stop.is_set():
+            block.close()
+            return
+        memory = block
+        leader = True
+        term_started = time.monotonic()
+        print(f"{IDENTITY}: acquired leadership; holding {LEADER_MIB} MiB", flush=True)
+
+
+    def demote(reason):
+        global memory, leader, confirmed_until
+        confirmed_until = 0.0
+        if leader:
+            leader = False
+            memory.close()  # mmap returns the pages to the OS immediately.
+            memory = None
+            print(f"{IDENTITY}: lost leadership ({reason}); released memory", flush=True)
+
+
+    def write_lease(record, holder):
+        spec = dict(record.get("spec") or {}) if record else {}
+        previous = spec.get("holderIdentity")
+        spec.update({"holderIdentity": holder,
+                     "leaseDurationSeconds": LEASE_SECONDS,
+                     "renewTime": now_rfc3339()})
+        if previous != holder:
+            spec["acquireTime"] = spec["renewTime"]
+            spec["leaseTransitions"] = int(spec.get("leaseTransitions") or 0) + 1
+        metadata = {"name": NAME, "namespace": NAMESPACE}
+        if record:
+            metadata["resourceVersion"] = record["metadata"]["resourceVersion"]
+            return request("PUT", "/" + NAME,
+                           {"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                            "metadata": metadata, "spec": spec})
+        return request("POST", "",
+                       {"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                        "metadata": metadata, "spec": spec})
+
+
+    def release_lease():
+        status, record = request("GET", "/" + NAME)
+        if status != 200 or record["spec"].get("holderIdentity") != IDENTITY:
+            return
+        spec = dict(record["spec"])
+        spec["holderIdentity"] = None
+        spec["renewTime"] = None
+        status, _ = request("PUT", "/" + NAME,
+                            {"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                             "metadata": {"name": NAME, "namespace": NAMESPACE,
+                                          "resourceVersion": record["metadata"]["resourceVersion"]},
+                             "spec": spec})
+        if status == 409:
+            print(f"{IDENTITY}: release conflicted; another pod changed the Lease", flush=True)
+
+
+    def check_lease():
+        global confirmed_until
+        if stop.is_set():
+            return
+        status, record = request("GET", "/" + NAME)
+        if status == 404:
+            demote("Lease deleted")
+            status, _ = write_lease(None, IDENTITY)
+        elif status == 200:
+            spec = record.get("spec") or {}
+            holder = spec.get("holderIdentity")
+            if holder != IDENTITY and holder and not expired(spec):
+                demote(f"Lease held by {holder}")
+                return
+            if stop.is_set():
+                return
+            status, _ = write_lease(record, IDENTITY)
+        if status in (200, 201):
+            confirmed_until = time.monotonic() + LEASE_SECONDS - 4
+            promote()
+        else:
+            demote(f"Lease update returned HTTP {status}")
+
+
+    def burn_cpu():
+        # About 200m CPU while leading. Followers only poll the Lease.
+        until = time.process_time() + 0.2
+        data = b"leader-election-demo" * 512
+        while (time.process_time() < until and leader and
+               time.monotonic() < confirmed_until and not stop.is_set()):
+            hashlib.sha256(data).digest()
+
+
+    next_check = 0.0
+    try:
+        while not stop.is_set():
+            cycle_started = time.monotonic()
+            if leader and cycle_started >= confirmed_until:
+                demote("Lease renewal deadline passed")
+            if leader and cycle_started - term_started >= TERM_SECONDS:
+                demote("ten-minute term ended")
+                next_check = time.monotonic() + random.uniform(0, RENEW_SECONDS)
+                try:
+                    release_lease()
+                except Exception as error:
+                    print(f"{IDENTITY}: could not release Lease: {error}", flush=True)
+            if cycle_started >= next_check:
+                next_check = time.monotonic() + RENEW_SECONDS + random.uniform(0, 1)
+                try:
+                    check_lease()
+                except Exception as error:
+                    demote(f"Lease API error: {error}")
+            if leader:
+                burn_cpu()
+            stop.wait(max(0, 1 - (time.monotonic() - cycle_started)))
+    finally:
+        demote("shutting down")
+        try:
+            release_lease()
+        except Exception as error:
+            print(f"{IDENTITY}: could not release Lease: {error}", flush=True)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leader-election-demo
+  namespace: kedr-leader-election-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: leader-election-demo
+  template:
+    metadata:
+      labels:
+        app: leader-election-demo
+    spec:
+      serviceAccountName: leader-election-demo
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: leader-election-demo
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/leader.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: leader-election-demo
