@@ -235,6 +235,10 @@ default. A customized longer sizing guard can still block sizing while leak
 detection reports potential growth. A potential leak is
 not a diagnosis; useful allocations and growing caches can look similar.
 
+In table output, the flag adds a `Potential Mem Leak` column. Positive findings appear as red `yes` when color is enabled,
+and remain visible even when no resource change is recommended.
+See the [memory leak demo](examples/memory-leak/README.md) for a workload and manifests that exercise this detector.
+
 ## Workloads and metrics
 
 Discovery supports Deployment, StatefulSet, DaemonSet, Job, CronJob, GroupedJob,
