@@ -44,6 +44,36 @@ go build -o bin/kedr ./cmd/kedr
 ./bin/kedr simple
 ```
 
+If your cluster has no Prometheus, install it with kube-state-metrics and cAdvisor scraping:
+
+```sh
+cat <<VALS | helm upgrade -i prometheus oci://ghcr.io/prometheus-community/charts/prometheus \
+  --version 29.36.1 -n monitoring --create-namespace -f -
+alertmanager:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+kube-state-metrics:
+  enabled: true
+  metricLabelsAllowlist: ["pods=[controller-revision-hash]"]
+scrapeConfigs:
+  prometheus: {enabled: false}
+  kubernetes-api-servers: {enabled: false}
+  kubernetes-nodes: {enabled: false}
+  kubernetes-service-endpoints: {enabled: false}
+  kubernetes-service-endpoints-slow: {enabled: false}
+  prometheus-pushgateway: {enabled: false}
+  kubernetes-services: {enabled: false}
+  kubernetes-pods: {enabled: false}
+  kubernetes-pods-slow: {enabled: false}
+  kube-state-metrics:
+    static_configs:
+      - targets: [prometheus-kube-state-metrics:8080]
+VALS
+```
+
 Use `kedr simple --help` or `kedr simple_limit --help` for the complete option reference.
 
 Table output includes a saved-run reference and an `explain` hint. Add `--explain`
