@@ -19,6 +19,7 @@ import (
 	"github.com/kedify/kedr/internal/config"
 	"github.com/kedify/kedr/internal/model"
 	"github.com/kedify/kedr/internal/resource"
+	"github.com/kedify/recommender/analysis"
 )
 
 func Render(value model.Report, cfg *config.Config, color bool) (string, error) {
@@ -180,7 +181,8 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	visible := make([]int, 0, len(report.Scans))
 	for i, s := range report.Scans {
 		hasOOM := cfg.UseOOMKillData && latestOOM(s) > 0
-		if !cfg.Full && !hasTableChange(s) && !hasOOM {
+		hasLeak := cfg.DetectMemoryLeaks && hasPotentialMemoryLeak(s)
+		if !cfg.Full && !hasTableChange(s) && !hasOOM && !hasLeak {
 			continue
 		}
 		visible = append(visible, i)
@@ -200,6 +202,10 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	lastResourceColumn := len(h)
 	if cfg.UseOOMKillData {
 		h = append(h, "OOMKilled")
+	}
+	leakColumn := len(h)
+	if cfg.DetectMemoryLeaks {
+		h = append(h, "Potential Mem Leak")
 	}
 	now := time.Now()
 	rows := make([][]string, 0, len(visible))
@@ -229,6 +235,13 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		if cfg.UseOOMKillData {
 			row = append(row, oomCell(latestOOM(scan), now))
 		}
+		if cfg.DetectMemoryLeaks {
+			leak := ""
+			if hasPotentialMemoryLeak(scan) {
+				leak = "yes"
+			}
+			row = append(row, leak)
+		}
 		rows = append(rows, row)
 	}
 	for col := firstResourceColumn; col < lastResourceColumn; col += 3 {
@@ -255,6 +268,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			if row >= 0 && row < len(visible) && col >= firstResourceColumn && col < lastResourceColumn && (col-firstResourceColumn)%3 == 0 {
 				return diffColors[(col-firstResourceColumn)/3].style(row)
 			}
+			if cfg.DetectMemoryLeaks && col == leakColumn && row >= 0 && row < len(visible) && hasPotentialMemoryLeak(report.Scans[visible[row]]) {
+				return style.Foreground(lipgloss.Color("#FF3B4E")).Bold(true)
+			}
 			return style
 		})
 	}
@@ -277,6 +293,18 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		}
 	}
 	return table + "\nDiff columns: total request change across current pods. Requests and limits are per container. OOM rows with no current pods show the per-container memory change. Values are rounded for display." + notes.String() + fmt.Sprintf("\n%d points - %s", report.Score, report.ScoreLetter())
+}
+
+func hasPotentialMemoryLeak(scan model.Scan) bool {
+	if scan.Analysis == nil {
+		return false
+	}
+	for _, result := range scan.Analysis.Results {
+		if result.Resource == analysis.ResourceMemory && result.MemoryLeak != nil && result.MemoryLeak.Status == analysis.MemoryLeakPotential {
+			return true
+		}
+	}
+	return false
 }
 
 func hasTableChange(scan model.Scan) bool {

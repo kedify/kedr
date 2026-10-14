@@ -172,6 +172,9 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 				t.Fatalf("%s report lost %s", format, notice)
 			}
 		}
+		if format == "table" && (!strings.Contains(text, "Potential Mem Leak") || !strings.Contains(text, "yes")) {
+			t.Fatalf("table report did not show the potential leak: %s", text)
+		}
 	}
 }
 
