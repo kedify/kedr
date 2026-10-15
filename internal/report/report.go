@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -176,6 +177,17 @@ func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error
 }
 
 func renderTable(report model.Report, cfg *config.Config, color bool) string {
+	if ShortHistoryBlocked(report.Scans) {
+		unit := "hours"
+		if cfg.MinimumHistoryHours == 1 {
+			unit = "hour"
+		}
+		warning := fmt.Sprintf("observed history required for sizing is shorter than %g %s, either wait or use shorter --minimum-history-hours", cfg.MinimumHistoryHours, unit)
+		if color {
+			warning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF9F1C")).Render(warning)
+		}
+		return fmt.Sprintf("Kedify Recommender — %s\n\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\n%s", cfg.Strategy, cfg.HistoryDuration, cfg.MinimumHistoryHours, warning)
+	}
 	h := []string{"Number"}
 	clusters := map[string]bool{}
 	visible := make([]int, 0, len(report.Scans))
@@ -305,6 +317,25 @@ func hasPotentialMemoryLeak(scan model.Scan) bool {
 		}
 	}
 	return false
+}
+
+// ShortHistoryBlocked reports when every analyzed resource lacks a recommendation
+// because its observed sizing history is below the configured minimum.
+func ShortHistoryBlocked(scans []model.Scan) bool {
+	if len(scans) == 0 {
+		return false
+	}
+	for _, scan := range scans {
+		if scan.Analysis == nil || len(scan.Analysis.Results) == 0 {
+			return false
+		}
+		for _, result := range scan.Analysis.Results {
+			if len(result.Recommendations) > 0 || result.DataQuality.Status != analysis.DataQualityUnavailable || !slices.Contains(result.DataQuality.Reasons, analysis.ReasonInsufficientHistory) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func hasTableChange(scan model.Scan) bool {
