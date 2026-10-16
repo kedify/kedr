@@ -37,6 +37,14 @@ brew install --cask kedify/tap/kedr
 kedr simple
 ```
 
+Or update
+
+```sh
+kedr version
+brew update && brew upgrade --cask kedify/tap/kedr
+kedr version
+```
+
 Or build from source:
 
 ```sh
