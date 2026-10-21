@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
-	github.com/kedify/recommender v0.2.1-0.20260925131000-48832c590dc3
+	github.com/kedify/recommender v0.2.1-0.20261021161101-c6dd7926a32a
 	github.com/muesli/cancelreader v0.2.2
 	github.com/prometheus/prometheus v0.311.3
 	github.com/spf13/cobra v1.10.2
@@ -95,6 +95,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-// TODO: Replace the local recommender dependency once https://github.com/kedify/recommender/pull/8 is merged.
-replace github.com/kedify/recommender => ../recommender

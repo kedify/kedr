@@ -334,11 +334,6 @@ Try the [HTTP/metrics demo](examples/http-metrics/README.md),
 [variance demo](examples/high-variance/README.md), and
 [CPU throttling demo](examples/cpu-throttle/README.md).
 
-For this local integration, `go.mod` temporarily replaces
-`github.com/kedify/recommender` with `../recommender`. Both checkouts are required
-to build; replace this directive with the published recommender revision before
-release or standalone CI.
-
 ### Optional memory-leak detection
 
 `--detect-memory-leaks` enables the module's advisory lower-baseline trend detector.
