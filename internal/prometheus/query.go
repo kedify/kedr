@@ -34,6 +34,12 @@ func BuildMetricQuery(metric string, object model.Object, cfg *config.Config) st
 		return fmt.Sprintf(`container_cpu_usage_seconds_total{cpu=~"total|",%s}`, labels)
 	case "MemoryUsage":
 		return fmt.Sprintf(`container_memory_working_set_bytes{%s}`, labels)
+	case "CPUThrottledSeconds":
+		return fmt.Sprintf(`container_cpu_cfs_throttled_seconds_total{%s}`, labels)
+	case "CPUThrottledPeriods":
+		return fmt.Sprintf(`container_cpu_cfs_throttled_periods_total{%s}`, labels)
+	case "CPUPeriods":
+		return fmt.Sprintf(`container_cpu_cfs_periods_total{%s}`, labels)
 	case "OOMKilledTimestamp":
 		return fmt.Sprintf(`kube_pod_container_status_last_terminated_timestamp{%s} * ignoring(reason) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled",%s} == 1)`, labels, labels)
 	default:
@@ -80,8 +86,11 @@ func (c *Client) ClusterSummary(ctx context.Context) map[string]any {
 
 func MetricsForStrategy(cfg *config.Config) []string {
 	names := []string{"CPUUsage", "MemoryUsage"}
-	if cfg.UseOOMKillData {
+	if cfg.UseOOMKillData || cfg.ClassifyWorkloads {
 		names = append(names, "OOMKilledTimestamp")
+	}
+	if cfg.ClassifyWorkloads {
+		names = append(names, "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods")
 	}
 	return names
 }

@@ -29,3 +29,7 @@ kubectl delete namespace kedr-memory-leak-demo
 ```
 
 `potential-memory-leak` is an advisory trend finding, not proof of an application bug. KEDR does not change the recommendation because of this flag.
+
+## Classification
+
+Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `memory-leak` after the existing detector has sufficient trend history (at least six hours with default policy). `oom-killed` is a separate tag requiring termination evidence.

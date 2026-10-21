@@ -30,7 +30,7 @@ func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metr
 
 // GatherWindow collects native observations for an immutable saved interval.
 func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, end time.Time) (strategy.Metrics, []string) {
-	result := strategy.Metrics{WindowStart: start.UnixMilli(), EvaluationTime: end.UnixMilli()}
+	result := strategy.Metrics{ClassifyWorkloads: c.cfg.ClassifyWorkloads, WindowStart: start.UnixMilli(), EvaluationTime: end.UnixMilli()}
 	var warnings []string
 	for _, metric := range MetricsForStrategy(c.cfg) {
 		rows, err := c.loadMetric(ctx, metric, object, start, end)
@@ -56,10 +56,17 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		if len(data) == 0 {
 			warnings = append(warnings, "NoPrometheus"+metric)
 		}
-		if metric == "CPUUsage" {
+		switch metric {
+		case "CPUUsage":
 			result.CPU = data
-		} else {
+		case "MemoryUsage":
 			result.Memory = data
+		case "CPUThrottledSeconds":
+			result.Throttling.Seconds = data
+		case "CPUThrottledPeriods":
+			result.Throttling.ThrottledPeriods = data
+		case "CPUPeriods":
+			result.Throttling.Periods = data
 		}
 	}
 	return result, warnings

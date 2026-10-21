@@ -23,7 +23,7 @@ func TestHelpAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--release-history", "--explain", "--full", "--no-color"} {
+	for _, flag := range []string{"--cpu-percentile", "--prometheus-url", "--job-grouping-labels", "--fileoutput", "--minimum-history-hours", "--detect-memory-leaks", "--classify-workloads", "--release-history", "--explain", "--full", "--no-color"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help missing %s", flag)
 		}

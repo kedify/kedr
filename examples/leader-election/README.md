@@ -41,3 +41,7 @@ Remove the demo when finished:
 ```sh
 kubectl delete namespace kedr-leader-election-demo
 ```
+
+## Classification
+
+Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `leader-election` when the active Lease holder matches one of the Deployment’s pods.

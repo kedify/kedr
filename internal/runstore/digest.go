@@ -37,5 +37,27 @@ func MetricsDigest(metrics strategy.Metrics) (string, error) {
 	if err := enc.Encode(events); err != nil {
 		return "", err
 	}
-	return "normalized-v1:" + hex.EncodeToString(h.Sum(nil)), nil
+
+	prefix := "normalized-v1:"
+	if metrics.ClassifyWorkloads {
+		prefix = "normalized-v2:"
+		for _, series := range [][]analysis.Series{metrics.Throttling.Seconds, metrics.Throttling.ThrottledPeriods, metrics.Throttling.Periods} {
+			rows := append([]analysis.Series(nil), series...)
+			sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+			if err := enc.Encode(len(rows)); err != nil {
+				return "", err
+			}
+			for _, row := range rows {
+				values, err := analysis.NormalizeSamples(row, metrics.WindowStart, metrics.EvaluationTime)
+				if err != nil {
+					return "", err
+				}
+				row.Samples = values
+				if err = enc.Encode(row); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+	return prefix + hex.EncodeToString(h.Sum(nil)), nil
 }

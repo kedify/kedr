@@ -14,11 +14,13 @@ import (
 type Point struct{ Time, Value float64 }
 
 type Metrics struct {
-	WindowStart    int64
-	EvaluationTime int64
-	CPU            []analysis.Series
-	Memory         []analysis.Series
-	OOMKills       []analysis.OOMKill
+	ClassifyWorkloads bool
+	Throttling        analysis.CPUThrottlingObservation
+	WindowStart       int64
+	EvaluationTime    int64
+	CPU               []analysis.Series
+	Memory            []analysis.Series
+	OOMKills          []analysis.OOMKill
 }
 
 type RawRecommendation struct {
@@ -59,6 +61,16 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 	}{{model.CPU, &c.CPU}, {model.Memory, &c.Memory}} {
 		entry.obs.CurrentRequest = currentSignal(object, entry.resource, false)
 		entry.obs.CurrentLimit = currentSignal(object, entry.resource, true)
+	}
+	if cfg.ClassifyWorkloads {
+		observation := analysis.ClassificationObservation{}
+		if object.Classification != nil {
+			observation = *object.Classification
+		}
+		observation.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
+		observation.Throttling = metrics.Throttling
+		observation.Issues = append(append([]string(nil), observation.Issues...), object.Warnings...)
+		c.Classification = &observation
 	}
 	if cfg.UseOOMKillData {
 		c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
@@ -263,6 +275,7 @@ func compareReleases(cfg *config.Config, metrics Metrics, object model.Object, p
 			pastMetrics.EvaluationTime, past.ObservedAt = last, last
 			input := Input(cfg, pastMetrics, past)
 			input.Containers[0].PreviousReleases = nil
+			policy.Classification = nil
 			// Historical comparisons have no historical allocation/inventory
 			// snapshot. Do not claim today's settings existed at that time and
 			// do not emit actionable recommendations for old releases.

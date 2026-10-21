@@ -177,7 +177,7 @@ func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error
 }
 
 func renderTable(report model.Report, cfg *config.Config, color bool) string {
-	if ShortHistoryBlocked(report.Scans) {
+	if ShortHistoryBlocked(report.Scans) && (!cfg.ClassifyWorkloads || !hasClassificationFindings(report.Scans)) {
 		unit := "hours"
 		if cfg.MinimumHistoryHours == 1 {
 			unit = "hour"
@@ -194,7 +194,7 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	for i, s := range report.Scans {
 		hasOOM := cfg.UseOOMKillData && latestOOM(s) > 0
 		hasLeak := cfg.DetectMemoryLeaks && hasPotentialMemoryLeak(s)
-		if !cfg.Full && !hasTableChange(s) && !hasOOM && !hasLeak {
+		if !cfg.Full && !hasTableChange(s) && !hasOOM && !hasLeak && (!cfg.ClassifyWorkloads || len(featureNames(s)) == 0) {
 			continue
 		}
 		visible = append(visible, i)
@@ -218,6 +218,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	leakColumn := len(h)
 	if cfg.DetectMemoryLeaks {
 		h = append(h, "Potential Mem Leak")
+	}
+	if cfg.ClassifyWorkloads {
+		h = append(h, "Features")
 	}
 	now := time.Now()
 	rows := make([][]string, 0, len(visible))
@@ -254,6 +257,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 			}
 			row = append(row, leak)
 		}
+		if cfg.ClassifyWorkloads {
+			row = append(row, strings.Join(featureNames(scan), ", "))
+		}
 		rows = append(rows, row)
 	}
 	for col := firstResourceColumn; col < lastResourceColumn; col += 3 {
@@ -287,6 +293,9 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		})
 	}
 	title := stripMarkup(report.Description)
+	if cfg.ClassifyWorkloads && ShortHistoryBlocked(report.Scans) {
+		title += fmt.Sprintf("\nObserved sizing history is shorter than %g hours; classification findings remain visible.", cfg.MinimumHistoryHours)
+	}
 	if title != "" {
 		title += "\n\n"
 	}
@@ -496,4 +505,22 @@ func pythonRepr(value any, depth int) string {
 func stripMarkup(s string) string {
 	r := strings.NewReplacer("[b]", "", "[/b]", "", "[underline]", "", "[/underline]", "")
 	return r.Replace(s)
+}
+
+func featureNames(scan model.Scan) []string {
+	var names []string
+	if finding := scan.Classification(); finding != nil {
+		for _, feature := range finding.Features {
+			names = append(names, string(feature))
+		}
+	}
+	return names
+}
+func hasClassificationFindings(scans []model.Scan) bool {
+	for _, scan := range scans {
+		if len(featureNames(scan)) > 0 {
+			return true
+		}
+	}
+	return false
 }

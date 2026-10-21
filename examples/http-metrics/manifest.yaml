@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kedr-http-metrics-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: http-metrics-demo
+  namespace: kedr-http-metrics-demo
+data:
+  server.py: |
+    import os
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    health_only = os.environ.get("HEALTH_ONLY") == "true"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/healthz":
+                body, content_type = b"ok\n", "text/plain"
+            elif self.path == "/metrics" and not health_only:
+                body = b"# TYPE demo_requests_total counter\ndemo_requests_total 1\n"
+                content_type = "text/plain; version=0.0.4"
+            elif self.path == "/api" and not health_only:
+                body, content_type = b'{"status":"ok"}\n', "application/json"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(body)
+
+    HTTPServer(("0.0.0.0", int(os.environ["PORT"])), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-metrics-demo
+  namespace: kedr-http-metrics-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: http-metrics-demo
+  template:
+    metadata:
+      labels:
+        app: http-metrics-demo
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: PORT
+              value: "8080"
+          ports:
+            - name: http-api
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              port: http-api
+              path: /healthz
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+        - name: health-only
+          image: python:3.13-slim-bookworm
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: PORT
+              value: "8081"
+            - name: HEALTH_ONLY
+              value: "true"
+          ports:
+            - name: http-healthz
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              port: http-healthz
+              path: /healthz
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: http-metrics-demo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-metrics-demo
+  namespace: kedr-http-metrics-demo
+spec:
+  selector:
+    app: http-metrics-demo
+  ports:
+    - name: http-api
+      port: 8080
+      targetPort: http-api
+    - name: http-healthz
+      port: 8081
+      targetPort: http-healthz

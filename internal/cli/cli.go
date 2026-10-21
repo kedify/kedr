@@ -129,6 +129,7 @@ func addStrategyFlags(f *pflag.FlagSet, cfg *config.Config, name string) {
 	f.Float64Var(&cfg.TimeframeDuration, "timeframe-duration", 1.25, "Optional OOM query step in minutes; CPU/memory use native scrape samples")
 	f.Float64Var(&cfg.MinimumHistoryHours, "minimum-history-hours", cfg.MinimumHistoryHours, "Minimum observed history required for sizing, independent of query duration")
 	f.IntVar(&cfg.ReleaseHistory, "release-history", cfg.ReleaseHistory, "Total rollouts to retain (1-4): current plus up to three previous rollouts for fallback")
+	f.BoolVar(&cfg.ClassifyWorkloads, "classify-workloads", false, "Classify workload features (advisory; does not change sizing)")
 	f.BoolVar(&cfg.DetectMemoryLeaks, "detect-memory-leaks", false, "Enable advisory potential memory-leak detection")
 	if name == "simple" {
 		f.Float64Var(&cfg.CPUPercentile, "cpu-percentile", 95, "CPU recommendation percentile")

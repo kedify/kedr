@@ -108,6 +108,7 @@ type Config struct {
 	CPULimitRatio        float64  `json:"-" yaml:"-"`
 	MinimumHistoryHours  float64  `json:"-" yaml:"-"`
 	ReleaseHistory       int      `json:"-" yaml:"-"`
+	ClassifyWorkloads    bool     `json:"-" yaml:"-"`
 	DetectMemoryLeaks    bool     `json:"-" yaml:"-"`
 	MemoryBufferPercent  float64  `json:"-" yaml:"-"`
 	PointsRequired       int      `json:"-" yaml:"-"`
@@ -280,7 +281,7 @@ func (c *Config) Validate() error {
 		"allow_hpa": c.AllowHPA, "use_oomkill_data": c.UseOOMKillData,
 		"oom_memory_buffer_percentage": c.OOMMemoryBuffer,
 		"minimum_history_hours":        c.MinimumHistoryHours, "detect_memory_leaks": c.DetectMemoryLeaks,
-		"release_history": c.ReleaseHistory,
+		"release_history": c.ReleaseHistory, "classify_workloads": c.ClassifyWorkloads,
 	}
 	if c.Strategy == "simple" {
 		c.OtherArgs["cpu_percentile"] = c.CPUPercentile
@@ -312,6 +313,9 @@ func (c *Config) AnalysisPolicy() (analysis.Policy, error) {
 	p.Memory.LimitsToRequestsRatio = 1
 	p.Evidence.MinimumSamples = c.PointsRequired
 	p.Evidence.MinimumHistorySeconds = int64(c.MinimumHistoryHours * 3600)
+	if c.ClassifyWorkloads {
+		p.Classification = &analysis.ClassificationPolicy{}
+	}
 	if c.DetectMemoryLeaks {
 		p.Memory.LeakDetection = &analysis.MemoryLeakPolicy{}
 	}

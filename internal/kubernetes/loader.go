@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,7 +36,11 @@ type Clients struct {
 	REST    *rest.Config
 }
 
-type Loader struct{ cfg *config.Config }
+type Loader struct {
+	cfg                      *config.Config
+	classificationNamespaces sync.Map
+	classificationWorkloads  sync.Map
+}
 
 func NewLoader(cfg *config.Config) *Loader { return &Loader{cfg: cfg} }
 
