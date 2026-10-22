@@ -237,6 +237,9 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			}
 		}
 	}
+	if l.cfg.ClassifyWorkloads {
+		object.Classification = l.classify(ctx, clients, object, items)
+	}
 	sort.Slice(object.Pods, func(i, j int) bool { return object.Pods[i].Name < object.Pods[j].Name })
 	return object, nil
 }

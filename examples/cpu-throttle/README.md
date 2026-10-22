@@ -44,3 +44,7 @@ Remove the demo when finished:
 ```sh
 kubectl delete namespace kedr-cpu-throttle-demo
 ```
+
+## Classification
+
+Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `cpu-throttled` when the Prometheus source exposes the cAdvisor counters above. The saved `explain` evidence reports throttled seconds per second and throttled-period percentage when available.

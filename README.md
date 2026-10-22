@@ -269,6 +269,73 @@ OOM sizing base, multiplier, resulting floor, and any minimum/maximum bounds;
 for example, `50Mi × 1.5 = 75Mi`, raised to the configured `100Mi` minimum.
 Event markers and calculations always come from the original scan.
 
+### Optional workload classification
+
+Pass `--classify-workloads` to `simple` or `simple_limit` to add a comma-separated
+`Features` table column. Tagged rows remain visible even without a sizing change
+or enough sizing history. Use `--full` to include untagged rows too.
+
+```sh
+kedr simple --namespace my-app --classify-workloads
+kedr explain 1 --offline
+```
+
+The shared recommender assigns zero or more advisory tags:
+
+| Feature | Evidence |
+| --- | --- |
+| `leader-election` | An active same-namespace Lease attributed to an owned pod or workload. Repeated on every container row in that workload. |
+| `high-variance-cpu` | Per-lifetime CPU coefficient of variation ≥0.5 and P95−P5 spread ≥50m. |
+| `high-variance-memory` | The same calculation for memory, with spread ≥32 MiB. |
+| `oom-killed` | A verified OOM termination within the current release and query window. |
+| `memory-leak` | A positive finding from the existing advisory lower-baseline trend detector. |
+| `cpu-throttled` | Positive increments in cAdvisor CPU throttling counters. |
+| `has-http-traffic` | A Service port named for HTTP, HTTPS, REST, API or web, or with an HTTP appProtocol hint. Health/probe/metrics-only port names are excluded. |
+| `has-metrics` | A successful endpoint response containing valid Prometheus/OpenMetrics samples. |
+
+Classification alone does not change sizing. `--use-oomkill-data` still controls
+OOM sizing adjustments and the dedicated OOM column; `--detect-memory-leaks`
+still controls the dedicated leak column. OOM and leak tags are independent.
+
+Variance uses the latest 24 hours within the requested window and current release,
+removes five minutes of warmup per container lifetime, and requires 30 minutes,
+30 samples, and 70% coverage. It does not pool replicas. Leak classification uses
+the existing detector defaults, including at least six hours of usable history.
+Missing or insufficient evidence leaves a tag absent; absence does not establish
+that the workload lacks the feature.
+
+KEDR optionally collects `container_cpu_cfs_throttled_seconds_total`,
+`container_cpu_cfs_throttled_periods_total`, and `container_cpu_cfs_periods_total`.
+`explain` reports throttled seconds per observed second and, when matching total
+periods exist, the percentage of quota periods throttled. Throttled seconds per
+second may exceed one; these counters do not measure application latency.
+
+HTTP is inferred from associated Service metadata, not observed request volume.
+A probe declaration alone never establishes an API listener. Metrics discovery
+uses Service target ports, declared container ports, and `prometheus.io/*` hints,
+but requires verification. It probes `/metrics` and safe annotation-specified
+paths through the Kubernetes pod proxy, with a three-second request timeout,
+fifteen-second workload budget, sixteen candidate limit, and one MiB response
+limit. Redirects are not followed. Ambiguous multi-container ports are left
+unassigned. Endpoints requiring application authentication may remain unverified.
+
+The scanning identity needs `list` on Services and `leases.coordination.k8s.io`
+in scanned namespaces and `get` on `pods/proxy` for endpoint verification.
+Denied discovery, failed probes, and missing counters are retained as evidence
+without failing resource recommendations. No additional classification requests
+are made without the flag.
+
+JSON/YAML analysis and saved runs retain tags and detector evidence. The `explain`
+command shows badges and evidence in HTML or plain text; offline explanations do
+not probe again. CSV and standalone HTML report layouts are unchanged.
+
+Try the [HTTP/metrics demo](examples/http-metrics/README.md),
+[leader election demo](examples/leader-election/README.md),
+[variance demo](examples/high-variance/README.md), and
+[CPU throttling demo](examples/cpu-throttle/README.md).
+
+### Optional memory-leak detection
+
 `--detect-memory-leaks` enables the module's advisory lower-baseline trend detector.
 It is off by default, does not change sizing, and uses its own six-hour minimum history, independent of the one-hour sizing
 default. A customized longer sizing guard can still block sizing while leak

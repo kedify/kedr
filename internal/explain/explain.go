@@ -19,26 +19,28 @@ import (
 )
 
 type Document struct {
-	RunID       string
-	Row         int
-	ScanTime    string
-	Version     string
-	Strategy    string
-	Target      string
-	Cluster     string
-	Window      string
-	Start       int64
-	End         int64
-	Cards       []Card
-	Resources   []Resource
-	Releases    []Release
-	Warnings    []string
-	ChartStatus string
-	RetrievedAt string
-	Technical   string
-	Queries     []string
-	Charts      []Chart
-	OOMEvents   []Event
+	Classification        *analysis.WorkloadClassification
+	ClassificationDetails []string
+	RunID                 string
+	Row                   int
+	ScanTime              string
+	Version               string
+	Strategy              string
+	Target                string
+	Cluster               string
+	Window                string
+	Start                 int64
+	End                   int64
+	Cards                 []Card
+	Resources             []Resource
+	Releases              []Release
+	Warnings              []string
+	ChartStatus           string
+	RetrievedAt           string
+	Technical             string
+	Queries               []string
+	Charts                []Chart
+	OOMEvents             []Event
 }
 type Card struct {
 	Title       string
@@ -127,6 +129,8 @@ func native(r model.ResourceType, v float64) string {
 func Build(run runstore.Run, row runstore.Row) Document {
 	o := row.Scan.Object
 	d := Document{RunID: run.ID, Row: row.Number, ScanTime: run.CreatedAt.UTC().Format(time.RFC3339), Version: run.KedrVersion, Strategy: run.Strategy, Target: fmt.Sprintf("%s / %s %s / %s", o.Namespace, o.Kind, o.Name, o.Container), Cluster: "in-cluster", Window: instant(row.WindowStart) + " — " + instant(row.EvaluationTime), Start: row.WindowStart, End: row.EvaluationTime, Warnings: append([]string(nil), o.Warnings...), ChartStatus: "Not fetched"}
+	d.Classification = row.Scan.Classification()
+	d.ClassificationDetails = classificationDetails(d.Classification)
 	if row.Connection.Context != nil {
 		d.Cluster = *row.Connection.Context
 	}
@@ -319,6 +323,7 @@ func Build(run runstore.Run, row runstore.Row) Document {
 	}
 	cfg := config.Default(run.Strategy)
 	cfg.PrometheusLabel, cfg.PrometheusClusterLabel = row.Connection.ClusterLabel, row.Connection.ClusterValue
+	cfg.ClassifyWorkloads = row.Connection.ClassifyWorkloads
 	cfg.UseOOMKillData = row.Connection.OOM
 	d.SetQueries(row, cfg)
 	technical, _ := json.MarshalIndent(row, "", "  ")
@@ -376,6 +381,14 @@ func reasonText(r analysis.Reason) string {
 func (d Document) Text(detailed bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "KEDR · Explain row %d\n%s\nContext: %s · Strategy: %s\nSaved: %s · Run: %s\nWindow: %s\n", d.Row, d.Target, d.Cluster, d.Strategy, d.ScanTime, d.RunID, d.Window)
+	if d.Classification != nil {
+		fmt.Fprintf(&b, "\nFeatures: %s\n", strings.Join(classificationNames(d.Classification), ", "))
+		if detailed {
+			for _, detail := range d.ClassificationDetails {
+				fmt.Fprintln(&b, detail)
+			}
+		}
+	}
 	for _, card := range d.Cards {
 		fmt.Fprintf(&b, "\n%s: %s → %s [%s]\n  %s\n", card.Title, card.Current, card.Recommended, card.StatusLabel(), card.Reason)
 		if card.Delta != "" {
@@ -412,7 +425,7 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 	d.Warnings = append(d.Warnings, warnings...)
 	digest, err := runstore.MetricsDigest(metrics)
 	d.ChartStatus = "Unverifiable: no compatible saved metric fingerprint."
-	if err == nil && row.Digest != "" && strings.HasPrefix(row.Digest, "normalized-v1:") && row.Scan.Analysis != nil && row.Scan.Analysis.DetectorVersion == analysis.ResourceRightSizeDetectorVersion {
+	if err == nil && row.Digest != "" && (strings.HasPrefix(row.Digest, "normalized-v1:") || strings.HasPrefix(row.Digest, "normalized-v2:")) && row.Scan.Analysis != nil && row.Scan.Analysis.DetectorVersion == analysis.ResourceRightSizeDetectorVersion {
 		if digest == row.Digest && len(warnings) == 0 {
 			d.ChartStatus = "Verified: retrieved observations match the saved metric fingerprint."
 		} else {
@@ -595,4 +608,66 @@ func humanLabel(key string) string {
 		}
 	}
 	return b.String()
+}
+
+func classificationNames(c *analysis.WorkloadClassification) []string {
+	names := make([]string, 0, len(c.Features))
+	for _, f := range c.Features {
+		names = append(names, string(f))
+	}
+	return names
+}
+func classificationDetails(c *analysis.WorkloadClassification) []string {
+	if c == nil {
+		return nil
+	}
+	details := make([]string, 0, len(c.Findings))
+	for _, f := range c.Findings {
+		var text strings.Builder
+		fmt.Fprintf(&text, "%s [%s]", f.Feature, f.Status)
+		for _, v := range f.Variance {
+			resource := model.CPU
+			if f.Feature == analysis.FeatureHighVarianceMemory {
+				resource = model.Memory
+			}
+			fmt.Fprintf(&text, "; %s: CV %.3f, P95−P5 %s, %.1f%% coverage, %d samples", v.SeriesID, v.CoefficientOfVariation, native(resource, v.Spread), 100*v.Coverage, v.SampleCount)
+		}
+		for _, v := range f.Throttling {
+			text.WriteString("; " + v.SeriesID)
+			if v.SecondsPerSecond != nil {
+				fmt.Fprintf(&text, ": %.4g throttled seconds/second", *v.SecondsPerSecond)
+			}
+			if v.ThrottledPeriodPercent != nil {
+				fmt.Fprintf(&text, ", %.2f%% quota periods throttled", *v.ThrottledPeriodPercent)
+			}
+		}
+		for _, v := range f.Leases {
+			fmt.Fprintf(&text, "; Lease %s/%s, holder pod UID %s", v.Namespace, v.Name, v.PodUID)
+		}
+		for _, v := range f.Endpoints {
+			fmt.Fprintf(&text, "; %s port %d%s", v.Name, v.Port, v.Path)
+			if v.MetricsVerified {
+				text.WriteString(" (verified metrics)")
+			} else if v.HTTP {
+				text.WriteString(" (inferred HTTP listener)")
+			}
+			if v.Issue != "" {
+				text.WriteString(" (" + v.Issue + ")")
+			}
+		}
+		if len(f.OOMKills) > 0 {
+			fmt.Fprintf(&text, "; %d OOM termination(s)", len(f.OOMKills))
+		}
+		if f.MemoryLeak != nil {
+			text.WriteString("; " + string(f.MemoryLeak.Status))
+		}
+		if len(f.Reasons) > 0 {
+			text.WriteString("; " + strings.Join(f.Reasons, ", "))
+		}
+		details = append(details, text.String())
+	}
+	for _, issue := range c.Issues {
+		details = append(details, "Collection: "+issue)
+	}
+	return details
 }

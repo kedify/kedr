@@ -59,24 +59,25 @@ type Pod struct {
 
 // Connection deliberately does not contain tokens, arbitrary headers, or a Config.
 type Connection struct {
-	Context          *string `json:"context"`
-	Kubeconfig       *string `json:"kubeconfig,omitempty"`
-	APIServer        string  `json:"apiServer,omitempty"`
-	Endpoint         string  `json:"endpoint,omitempty"`
-	AutoDiscovered   bool    `json:"autoDiscovered"`
-	ClusterLabel     *string `json:"clusterLabel,omitempty"`
-	ClusterValue     *string `json:"clusterValue,omitempty"`
-	VerifyTLS        bool    `json:"verifyTLS"`
-	OOM              bool    `json:"oom"`
-	OOMStepMinutes   float64 `json:"oomStepMinutes"`
-	ImpersonateUser  *string `json:"impersonateUser,omitempty"`
-	ImpersonateGroup *string `json:"impersonateGroup,omitempty"`
-	EKS              bool    `json:"eks"`
-	Profile          *string `json:"profile,omitempty"`
-	Region           *string `json:"region,omitempty"`
-	Role             *string `json:"role,omitempty"`
-	Service          *string `json:"service,omitempty"`
-	OpenShift        bool    `json:"openshift"`
+	ClassifyWorkloads bool    `json:"classifyWorkloads,omitempty"`
+	Context           *string `json:"context"`
+	Kubeconfig        *string `json:"kubeconfig,omitempty"`
+	APIServer         string  `json:"apiServer,omitempty"`
+	Endpoint          string  `json:"endpoint,omitempty"`
+	AutoDiscovered    bool    `json:"autoDiscovered"`
+	ClusterLabel      *string `json:"clusterLabel,omitempty"`
+	ClusterValue      *string `json:"clusterValue,omitempty"`
+	VerifyTLS         bool    `json:"verifyTLS"`
+	OOM               bool    `json:"oom"`
+	OOMStepMinutes    float64 `json:"oomStepMinutes"`
+	ImpersonateUser   *string `json:"impersonateUser,omitempty"`
+	ImpersonateGroup  *string `json:"impersonateGroup,omitempty"`
+	EKS               bool    `json:"eks"`
+	Profile           *string `json:"profile,omitempty"`
+	Region            *string `json:"region,omitempty"`
+	Role              *string `json:"role,omitempty"`
+	Service           *string `json:"service,omitempty"`
+	OpenShift         bool    `json:"openshift"`
 }
 
 // SafeEndpoint refuses credentials and query/fragment values rather than persisting
@@ -89,7 +90,7 @@ func SafeEndpoint(endpoint string) string {
 	return u.String()
 }
 func SavedConnection(cfg *config.Config, context *string, endpoint, apiServer string, auto bool) Connection {
-	return Connection{Context: context, Kubeconfig: cfg.Kubeconfig, APIServer: SafeEndpoint(apiServer), Endpoint: SafeEndpoint(endpoint), AutoDiscovered: auto, ClusterLabel: cfg.PrometheusLabel, ClusterValue: cfg.PrometheusClusterLabel, VerifyTLS: cfg.PrometheusSSLEnabled, OOM: cfg.UseOOMKillData, OOMStepMinutes: cfg.TimeframeDuration, ImpersonateUser: cfg.ImpersonateUser, ImpersonateGroup: cfg.ImpersonateGroup, EKS: cfg.EKSManagedProm, Profile: cfg.EKSManagedPromProfileName, Region: cfg.EKSManagedPromRegion, Role: cfg.EKSAssumeRole, Service: cfg.EKSServiceName, OpenShift: cfg.OpenShift}
+	return Connection{ClassifyWorkloads: cfg.ClassifyWorkloads, Context: context, Kubeconfig: cfg.Kubeconfig, APIServer: SafeEndpoint(apiServer), Endpoint: SafeEndpoint(endpoint), AutoDiscovered: auto, ClusterLabel: cfg.PrometheusLabel, ClusterValue: cfg.PrometheusClusterLabel, VerifyTLS: cfg.PrometheusSSLEnabled, OOM: cfg.UseOOMKillData, OOMStepMinutes: cfg.TimeframeDuration, ImpersonateUser: cfg.ImpersonateUser, ImpersonateGroup: cfg.ImpersonateGroup, EKS: cfg.EKSManagedProm, Profile: cfg.EKSManagedPromProfileName, Region: cfg.EKSManagedPromRegion, Role: cfg.EKSAssumeRole, Service: cfg.EKSServiceName, OpenShift: cfg.OpenShift}
 }
 func NewRow(scan model.Scan, metrics strategy.Metrics, conn Connection) Row {
 	row := Row{Scan: scan, WindowStart: metrics.WindowStart, EvaluationTime: metrics.EvaluationTime, Identity: Identity{UID: scan.Object.UID, Release: scan.Object.Release}, Connection: conn}

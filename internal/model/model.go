@@ -132,18 +132,19 @@ type HPA struct {
 }
 
 type Object struct {
-	Cluster     *string           `json:"cluster" yaml:"cluster"`
-	Name        string            `json:"name" yaml:"name"`
-	Container   string            `json:"container" yaml:"container"`
-	Pods        []Pod             `json:"pods" yaml:"pods"`
-	HPA         *HPA              `json:"hpa" yaml:"hpa"`
-	Namespace   string            `json:"namespace" yaml:"namespace"`
-	Kind        string            `json:"kind" yaml:"kind"`
-	Allocations Allocations       `json:"allocations" yaml:"allocations"`
-	Warnings    []string          `json:"warnings" yaml:"warnings"`
-	Labels      map[string]string `json:"labels" yaml:"labels"`
-	Annotations map[string]string `json:"annotations" yaml:"annotations"`
-	Releases    []Release         `json:"releases,omitempty" yaml:"releases,omitempty"`
+	Classification *analysis.ClassificationObservation `json:"-" yaml:"-"`
+	Cluster        *string                             `json:"cluster" yaml:"cluster"`
+	Name           string                              `json:"name" yaml:"name"`
+	Container      string                              `json:"container" yaml:"container"`
+	Pods           []Pod                               `json:"pods" yaml:"pods"`
+	HPA            *HPA                                `json:"hpa" yaml:"hpa"`
+	Namespace      string                              `json:"namespace" yaml:"namespace"`
+	Kind           string                              `json:"kind" yaml:"kind"`
+	Allocations    Allocations                         `json:"allocations" yaml:"allocations"`
+	Warnings       []string                            `json:"warnings" yaml:"warnings"`
+	Labels         map[string]string                   `json:"labels" yaml:"labels"`
+	Annotations    map[string]string                   `json:"annotations" yaml:"annotations"`
+	Releases       []Release                           `json:"releases,omitempty" yaml:"releases,omitempty"`
 
 	Selector             string             `json:"-" yaml:"-"`
 	UID                  string             `json:"-" yaml:"-"`
@@ -323,4 +324,17 @@ func SortObjectsFromScans(scans []Scan) {
 		}
 		return a.Container < b.Container
 	})
+}
+
+// Classification returns this scan's saved advisory finding, when enabled.
+func (s Scan) Classification() *analysis.WorkloadClassification {
+	if s.Analysis != nil {
+		for i := range s.Analysis.Classifications {
+			c := &s.Analysis.Classifications[i]
+			if c.Target.Namespace == s.Object.Namespace && c.Target.Kind == s.Object.Kind && c.Target.Name == s.Object.Name && c.Target.Container == s.Object.Container {
+				return c
+			}
+		}
+	}
+	return nil
 }

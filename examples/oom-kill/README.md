@@ -32,3 +32,7 @@ Remove the demo when finished:
 ```sh
 kubectl delete namespace kedr-oom-kill-demo
 ```
+
+## Classification
+
+Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `oom-killed` after an observed termination; this flag alone does not enable OOM sizing adjustments. A kill alone does not imply `memory-leak`.

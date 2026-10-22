@@ -148,6 +148,7 @@ func restoreConnection(cmd *cobra.Command, cfg *config.Config, c runstore.Connec
 	cfg.ImpersonateUser, cfg.ImpersonateGroup = c.ImpersonateUser, c.ImpersonateGroup
 	cfg.PrometheusLabel, cfg.PrometheusClusterLabel = c.ClusterLabel, c.ClusterValue
 	cfg.EKSManagedPromProfileName, cfg.EKSManagedPromRegion, cfg.EKSAssumeRole, cfg.EKSServiceName = c.Profile, c.Region, c.Role, c.Service
+	cfg.ClassifyWorkloads = c.ClassifyWorkloads
 	cfg.UseOOMKillData = c.OOM
 	cfg.TimeframeDuration = c.OOMStepMinutes
 	if cfg.TimeframeDuration <= 0 {

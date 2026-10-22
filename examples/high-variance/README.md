@@ -44,3 +44,7 @@ KEDR reports one row per container. The `explain` chart for each row shows the o
 ```sh
 kubectl delete namespace kedr-high-variance-demo
 ```
+
+## Classification
+
+Add `--classify-workloads` to the scan command to include advisory feature tags. After at least 35 minutes of usable observations, expect `high-variance-memory` for `memory-variance`, `high-variance-cpu` for `cpu-variance`, and both for `cpu-memory-variance`. Exact CPU behavior depends on node contention.

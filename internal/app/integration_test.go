@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -58,7 +59,7 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 	cfg := config.Default(strategyName)
 	cfg.NamespaceValues, cfg.ResourceValues = []string{"ns"}, []string{kind}
 	cfg.HistoryDuration, cfg.MinimumHistoryHours, cfg.TimeframeDuration = 24, 3, 1
-	cfg.UseOOMKillData, cfg.DetectMemoryLeaks = true, true
+	cfg.UseOOMKillData, cfg.DetectMemoryLeaks, cfg.ClassifyWorkloads = true, true, true
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +106,12 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 			switch {
 			case strings.Contains(query, "last_terminated_timestamp"):
 				value = float64(now.Add(-30 * time.Minute).Unix())
+			case strings.Contains(query, "cfs_throttled_seconds"):
+				value = max(0, age) * .5
+			case strings.Contains(query, "cfs_throttled_periods"):
+				value = max(0, age) * 5
+			case strings.Contains(query, "cfs_periods"):
+				value = max(0, age) * 10
 			case strings.Contains(query, "cpu_usage_seconds"):
 				value = float64(source-now.Add(-48*time.Hour).Unix()) * .2
 			}
@@ -134,6 +141,12 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 	if memory.MemoryLeak == nil || memory.MemoryLeak.Status != analysis.MemoryLeakPotential || len(memory.Evidence.OOMKills) != 1 || memory.OOMAdjustment == nil {
 		t.Fatalf("diagnostics lost across adapters: %+v", memory)
 	}
+	features := result.Analysis.Classifications[0].Features
+	for _, feature := range []analysis.WorkloadFeature{analysis.FeatureOOMKilled, analysis.FeatureMemoryLeak, analysis.FeatureCPUThrottled} {
+		if !slices.Contains(features, feature) {
+			t.Fatalf("classification lost across adapters: %v", features)
+		}
+	}
 	scan := recommend.Scan(object, result)
 	store := runstore.Store{Root: t.TempDir()}
 	saved, err := store.Save(runstore.Run{Strategy: cfg.Strategy, Rows: []runstore.Row{runstore.NewRow(scan, metrics, runstore.Connection{})}})
@@ -149,6 +162,9 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 	explanation.AddMetrics(loaded.Rows[0], reloadedMetrics, reloadedWarnings)
 	if !strings.Contains(explanation.ChartStatus, "Verified") || len(explanation.Cards) != 4 {
 		t.Fatalf("saved explanation failed: %+v", explanation)
+	}
+	if explanation.Classification == nil || !slices.Equal(explanation.Classification.Features, features) {
+		t.Fatal("classification lost after saving and reloading")
 	}
 	if _, err := explain.HTML(explanation); err != nil {
 		t.Fatal(err)
