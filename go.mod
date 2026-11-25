@@ -12,7 +12,7 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
-	github.com/kedify/recommender v0.3.1-0.20261125080000-4f23e4c826f4
+	github.com/kedify/recommender v0.3.1-0.20261125080728-d7ebcc7582a3
 	github.com/muesli/cancelreader v0.2.2
 	github.com/prometheus/prometheus v0.311.3
 	github.com/spf13/cobra v1.10.2

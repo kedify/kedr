@@ -146,8 +146,8 @@ github.com/jpillora/backoff v1.0.0 h1:uvFg412JmmHBHw7iwprIxkPMI+sGQ4kzOWsMeHnm2E
 github.com/jpillora/backoff v1.0.0/go.mod h1:J/6gKK9jxlEcS3zixgDgUAsiuZ7yrSoa/FX5e0EB2j4=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
-github.com/kedify/recommender v0.3.1-0.20261125080000-4f23e4c826f4 h1:Njb9LbgTH8Wpsbg17ftqlm5TAXIk9y0HaKNnuv4s2UE=
-github.com/kedify/recommender v0.3.1-0.20261125080000-4f23e4c826f4/go.mod h1:0gVslwVxKaoeYBeomhasWUEvGTEwjE46sY63zwDi0yY=
+github.com/kedify/recommender v0.3.1-0.20261125080728-d7ebcc7582a3 h1:nfISqsaLUzHLwIhplbOBmsMFxKARd0vWUT3W4u17Uos=
+github.com/kedify/recommender v0.3.1-0.20261125080728-d7ebcc7582a3/go.mod h1:0gVslwVxKaoeYBeomhasWUEvGTEwjE46sY63zwDi0yY=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/compress v1.18.5 h1:/h1gH5Ce+VWNLSWqPzOVn6XBO+vJbCNGvjoaGBFW2IE=
