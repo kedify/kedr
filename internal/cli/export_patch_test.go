@@ -21,7 +21,11 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		SchemaVersion: analysis.OutputSchemaVersion, PolicyVersion: "test-policy", DetectorVersion: "9",
 		Results: []analysis.ResourceAnalysis{
 			{Target: target, Resource: analysis.ResourceCPU,
-				Recommendations: []analysis.Recommendation{{Setting: analysis.SettingRequests, CurrentValue: 100, SuggestedValue: 200}}},
+				Evidence: analysis.ResourceEvidence{
+					Identity: identity, CurrentRequest: analysis.Signal{Available: true, Value: 1001.0000000000001},
+					CurrentLimit: analysis.Signal{Available: true, Unset: true},
+				},
+				Recommendations: []analysis.Recommendation{{Setting: analysis.SettingRequests, CurrentValue: 1000.9999999999999, SuggestedValue: 1100}}},
 			{Target: target, Resource: analysis.ResourceMemory,
 				Evidence: analysis.ResourceEvidence{
 					Identity: identity, CurrentRequest: analysis.Signal{Available: true, Value: 8 * mi},
@@ -34,13 +38,16 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 				}},
 		},
 	}
-	_, err := store.Save(runstore.Run{Rows: []runstore.Row{{
+	row := runstore.Row{
 		EvaluationTime: 1234, Identity: runstore.Identity{UID: target.WorkloadUID, Release: target.Release},
 		Scan: model.Scan{
 			Object:   model.Object{Cluster: &cluster, Namespace: target.Namespace, Kind: target.Kind, Name: target.Name, Container: target.Container},
 			Analysis: analysisOutput, SuppressedResources: map[model.ResourceType]string{model.CPU: "HPA detected"},
 		},
-	}}})
+	}
+	unheld := row
+	unheld.Scan.SuppressedResources = nil
+	_, err := store.Save(runstore.Run{Rows: []runstore.Row{row, unheld}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,5 +75,27 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		if check.Status != reviewpatch.Unperformed {
 			t.Fatalf("offline command claims a live check: %+v", check)
 		}
+	}
+
+	stdout.Reset()
+	result = reviewpatch.Review{}
+	cmd = newExportPatchCommand(func() (runstore.Store, error) { return store, nil })
+	cmd.SetArgs([]string{"2"})
+	cmd.SetOut(&stdout)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if err := result.Document.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, result.Document.Artifact.Patch); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(compact.Bytes(), []byte(`"cpu":"1100m"`)) {
+		t.Fatalf("missing unheld CPU patch: %s", compact.Bytes())
 	}
 }
