@@ -15,6 +15,7 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	const mi = 1024 * 1024
 	target := analysis.Target{Namespace: "default", Kind: "Deployment", Name: "oom-example", Container: "app", WorkloadUID: "test-uid", Release: "pod-template-hash:1"}
 	cluster := "test-cluster"
+	metricCluster := "saved-metric-cluster"
 	store := runstore.Store{Root: t.TempDir()}
 	identity := analysis.CurrentIdentity{Available: true, WorkloadUID: target.WorkloadUID, Release: target.Release}
 	analysisOutput := &analysis.Output{
@@ -39,6 +40,7 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		},
 	}
 	row := runstore.Row{
+		Connection:     runstore.Connection{ClusterValue: &metricCluster},
 		EvaluationTime: 1234, Identity: runstore.Identity{UID: target.WorkloadUID, Release: target.Release},
 		Scan: model.Scan{
 			Object:   model.Object{Cluster: &cluster, Namespace: target.Namespace, Kind: target.Kind, Name: target.Name, Container: target.Container},
@@ -47,7 +49,9 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	}
 	unheld := row
 	unheld.Scan.SuppressedResources = nil
-	_, err := store.Save(runstore.Run{Rows: []runstore.Row{row, unheld}})
+	unsupported := row
+	unsupported.Scan.Object.Kind = "StatefulSet"
+	_, err := store.Save(runstore.Run{Rows: []runstore.Row{row, unheld, unsupported}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,11 +95,23 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	if err := result.Document.Verify(); err != nil {
 		t.Fatal(err)
 	}
+	if result.Document.Artifact.Cluster != metricCluster {
+		t.Fatalf("expected saved metric cluster, got %q", result.Document.Artifact.Cluster)
+	}
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, result.Document.Artifact.Patch); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(compact.Bytes(), []byte(`"cpu":"1100m"`)) {
 		t.Fatalf("missing unheld CPU patch: %s", compact.Bytes())
+	}
+
+	stdout.Reset()
+	cmd = newExportPatchCommand(func() (runstore.Store, error) { return store, nil })
+	cmd.SetArgs([]string{"3"})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	if err := cmd.Execute(); err == nil || err.Error() != "row 3 is a StatefulSet. Patch export requires a Deployment" {
+		t.Fatalf("unsupported workload error = %v", err)
 	}
 }
