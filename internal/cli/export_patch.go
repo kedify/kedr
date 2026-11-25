@@ -13,7 +13,7 @@ import (
 )
 
 func newExportPatchCommand(openStore func() (runstore.Store, error)) *cobra.Command {
-	var runID string
+	var runID, clusterID string
 	cmd := &cobra.Command{
 		Use:   "export-patch <row>",
 		Short: "Export a Deployment container resource patch for review from a saved run",
@@ -36,9 +36,15 @@ func newExportPatchCommand(openStore func() (runstore.Store, error)) *cobra.Comm
 			}
 			row := run.Rows[number-1]
 			object := row.Object()
+			if object.Kind != "Deployment" {
+				return fmt.Errorf("row %d is a %s. Patch export requires a Deployment", number, object.Kind)
+			}
 			cluster := object.Cluster
 			if row.Connection.ClusterValue != nil && *row.Connection.ClusterValue != "" {
 				cluster = row.Connection.ClusterValue
+			}
+			if clusterID != "" {
+				cluster = &clusterID
 			}
 			if cluster == nil || *cluster == "" {
 				return errors.New("saved row is missing cluster identity")
@@ -61,5 +67,6 @@ func newExportPatchCommand(openStore func() (runstore.Store, error)) *cobra.Comm
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "Saved run ID (defaults to the latest run)")
+	cmd.Flags().StringVar(&clusterID, "cluster-id", "", "Registered cluster ID for the artifact (defaults to the saved scope)")
 	return cmd
 }

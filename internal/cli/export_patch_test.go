@@ -46,7 +46,7 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	}
 	var stdout bytes.Buffer
 	cmd := newExportPatchCommand(func() (runstore.Store, error) { return store, nil })
-	cmd.SetArgs([]string{"1"})
+	cmd.SetArgs([]string{"1", "--cluster-id", "registered-cluster"})
 	cmd.SetOut(&stdout)
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact := result.Document.Artifact
-	if len(artifact.Changes) != 1 || artifact.Changes[0].Resource != analysis.ResourceMemory ||
+	if artifact.Cluster != "registered-cluster" || len(artifact.Changes) != 1 || artifact.Changes[0].Resource != analysis.ResourceMemory ||
 		*artifact.Changes[0].After.Request != 100*mi || *artifact.Changes[0].After.Limit != 100*mi ||
 		len(artifact.Holds) != 1 || artifact.Holds[0].Resource != analysis.ResourceCPU {
 		t.Fatalf("unexpected review: %+v", artifact)
