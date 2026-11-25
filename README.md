@@ -159,6 +159,10 @@ endpoint does not inherit the original Kubernetes bearer token. A changed or mis
 saved Kubernetes context produces a chart diagnostic rather than silently using the
 current context. `--offline` and `--format text` need no credentials.
 
+Use `kedr export-patch <row> [--run <run-id>]` to export a Deployment container
+patch for review as JSON. The export uses the saved decision without network
+access, preserves held settings, and marks live checks unperformed. Use `--cluster-id` to use a registered cluster ID in place of the saved Prometheus label or kubeconfig context name.
+
 The report explains the strategy's actual behavior, including retained limits,
 material-change thresholds, HPA suppression, insufficient evidence, OOM adjustments,
 and bounds. `simple` retains CPU limits; `explain` does not introduce limit removal.

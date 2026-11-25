@@ -15,6 +15,7 @@ import (
 
 	"github.com/kedify/kedr/internal/app"
 	"github.com/kedify/kedr/internal/config"
+	"github.com/kedify/kedr/internal/runstore"
 )
 
 var Version = "dev"
@@ -52,7 +53,7 @@ func NewRoot() *cobra.Command {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), Version)
 		return err
 	}})
-	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"), explainCommand(), completionCommand())
+	root.AddCommand(strategyCommand("simple"), strategyCommand("simple_limit"), explainCommand(), newExportPatchCommand(runstore.Default), completionCommand())
 	return root
 }
 
