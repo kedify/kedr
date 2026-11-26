@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"testing"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -32,5 +33,26 @@ func TestRecordContainerFailureSkipsNormalCompletion(t *testing.T) {
 				t.Fatalf("failure evidence = %+v, want present %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRolloutHPAReadsStatusWhenObservedGenerationIsAbsent(t *testing.T) {
+	item := autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "rollout-hpa", Generation: 1, UID: "rollout-hpa-uid"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{APIVersion: "argoproj.io/v1alpha1", Kind: "Rollout", Name: "rollout"},
+		},
+		Status: autoscalingv2.HorizontalPodAutoscalerStatus{CurrentReplicas: 2,
+			Conditions: []autoscalingv2.HorizontalPodAutoscalerCondition{{Type: autoscalingv2.AbleToScale}}},
+	}
+	got := hpaV2(item)
+	if len(got.Live) != 1 || got.Live[0].CurrentReplicas == nil || *got.Live[0].CurrentReplicas != 2 {
+		t.Fatalf("live rollout HPA = %+v", got.Live)
+	}
+	generation := int64(0)
+	item.Status.ObservedGeneration = &generation
+	got = hpaV2(item)
+	if got.Live[0].CurrentReplicas != nil {
+		t.Fatalf("outdated status was used: %+v", got.Live)
 	}
 }

@@ -28,7 +28,7 @@ func observeHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) model.HPAObservation
 	}
 	// A controller may publish status without either HPA generation.
 	statusCurrent := hpa.Status.ObservedGeneration != nil && *hpa.Status.ObservedGeneration == hpa.Generation ||
-		hpa.Status.ObservedGeneration == nil && hpa.Generation == 0 && len(hpa.Status.Conditions) > 0
+		hpa.Status.ObservedGeneration == nil && len(hpa.Status.Conditions) > 0
 	if statusCurrent {
 		result.CurrentReplicas, result.DesiredReplicas = &hpa.Status.CurrentReplicas, &hpa.Status.DesiredReplicas
 	}

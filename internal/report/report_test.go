@@ -58,6 +58,20 @@ func TestTableShowsShortHistoryWarningOnlyWhenAllSizingIsBlocked(t *testing.T) {
 		t.Fatalf("structured report lost detail: %q, %v", jsonReport, err)
 	}
 
+	cfg.Format = "table"
+	cfg.Explain, cfg.Full = true, true
+	file := "report.txt"
+	cfg.FileOutput = &file
+	r.Scans[0].Object.HPA = &model.HPA{Live: []model.HPAObservation{{Name: "live-hpa"}}}
+	console, err := Render(r, cfg, false)
+	if err != nil || !strings.Contains(console, "HPA live-hpa") || !strings.Contains(console, "observed history required") {
+		t.Fatalf("short-history console lost live HPA: %q, %v", console, err)
+	}
+	saved, err := RenderFile(r, cfg)
+	if err != nil || strings.Contains(saved, "live-hpa") {
+		t.Fatalf("saved report included live HPA: %q, %v", saved, err)
+	}
+
 	for _, tc := range []struct {
 		name   string
 		change func(*model.Report)

@@ -298,7 +298,9 @@ func mergeHPA(existing, next *model.HPA) *model.HPA {
 
 func hpaV2(item autoscalingv2.HorizontalPodAutoscaler) *model.HPA {
 	h := &model.HPA{MinReplicas: item.Spec.MinReplicas, MaxReplicas: item.Spec.MaxReplicas, CurrentReplicas: &item.Status.CurrentReplicas, DesiredReplicas: item.Status.DesiredReplicas}
-	if item.UID != "" && item.Spec.ScaleTargetRef.APIVersion == "apps/v1" {
+	ref := item.Spec.ScaleTargetRef
+	if item.UID != "" && (ref.APIVersion == "apps/v1" ||
+		(ref.APIVersion == rolloutGVR.GroupVersion().String() && ref.Kind == "Rollout")) {
 		h.Live = []model.HPAObservation{observeHPA(&item)}
 	}
 	for _, metric := range item.Spec.Metrics {
