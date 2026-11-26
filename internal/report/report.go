@@ -24,6 +24,15 @@ import (
 )
 
 func Render(value model.Report, cfg *config.Config, color bool) (string, error) {
+	return render(value, cfg, color, true)
+}
+
+// RenderFile keeps transient live observations out of the saved report.
+func RenderFile(value model.Report, cfg *config.Config) (string, error) {
+	return render(value, cfg, false, false)
+}
+
+func render(value model.Report, cfg *config.Config, color, includeLive bool) (string, error) {
 	switch cfg.Format {
 	case "json":
 		data, err := json.MarshalIndent(value, "", "  ")
@@ -48,7 +57,7 @@ func Render(value model.Report, cfg *config.Config, color bool) (string, error) 
 	case "html":
 		return renderHTML(value, cfg)
 	default:
-		return renderTable(value, cfg, color && !cfg.NoColor && os.Getenv("NO_COLOR") == ""), nil
+		return renderTable(value, cfg, color && !cfg.NoColor && os.Getenv("NO_COLOR") == "", includeLive), nil
 	}
 }
 
@@ -176,7 +185,7 @@ func renderCSV(report model.Report, cfg *config.Config, raw bool) (string, error
 	return b.String(), w.Error()
 }
 
-func renderTable(report model.Report, cfg *config.Config, color bool) string {
+func renderTable(report model.Report, cfg *config.Config, color, includeLive bool) string {
 	if ShortHistoryBlocked(report.Scans) && (!cfg.ClassifyWorkloads || !hasClassificationFindings(report.Scans)) {
 		unit := "hours"
 		if cfg.MinimumHistoryHours == 1 {
@@ -186,7 +195,16 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 		if color {
 			warning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF9F1C")).Render(warning)
 		}
-		return fmt.Sprintf("Kedify Recommender — %s\n\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\n%s", cfg.Strategy, cfg.HistoryDuration, cfg.MinimumHistoryHours, warning)
+		var output strings.Builder
+		fmt.Fprintf(&output, "Kedify Recommender — %s\n\nQuery history: %g hours; minimum sizing history: %g hours; native CPU/memory scrape samples\n%s", cfg.Strategy, cfg.HistoryDuration, cfg.MinimumHistoryHours, warning)
+		if includeLive && cfg.Explain {
+			for _, scan := range report.Scans {
+				if note := liveEvidenceNotes(scan.Object); note != "" {
+					fmt.Fprintf(&output, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, note)
+				}
+			}
+		}
+		return output.String()
 	}
 	h := []string{"Number"}
 	clusters := map[string]bool{}
@@ -309,7 +327,14 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	var notes strings.Builder
 	for _, i := range visible {
 		scan := report.Scans[i]
-		if text := scanNotes(scan, tableQuantity); text != "" {
+		text := scanNotes(scan, tableQuantity)
+		if live := liveEvidenceNotes(scan.Object); includeLive && live != "" {
+			if text != "" {
+				text += "; "
+			}
+			text += live
+		}
+		if text != "" {
 			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
 		}
 	}

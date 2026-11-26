@@ -123,28 +123,60 @@ type ReleaseComparison struct {
 }
 
 type HPA struct {
-	MinReplicas         *int32   `json:"min_replicas" yaml:"min_replicas"`
-	MaxReplicas         int32    `json:"max_replicas" yaml:"max_replicas"`
-	CurrentReplicas     *int32   `json:"current_replicas" yaml:"current_replicas"`
-	DesiredReplicas     int32    `json:"desired_replicas" yaml:"desired_replicas"`
-	TargetCPUPercent    *float64 `json:"target_cpu_utilization_percentage" yaml:"target_cpu_utilization_percentage"`
-	TargetMemoryPercent *float64 `json:"target_memory_utilization_percentage" yaml:"target_memory_utilization_percentage"`
+	Live                []HPAObservation `json:"-" yaml:"-"`
+	MinReplicas         *int32           `json:"min_replicas" yaml:"min_replicas"`
+	MaxReplicas         int32            `json:"max_replicas" yaml:"max_replicas"`
+	CurrentReplicas     *int32           `json:"current_replicas" yaml:"current_replicas"`
+	DesiredReplicas     int32            `json:"desired_replicas" yaml:"desired_replicas"`
+	TargetCPUPercent    *float64         `json:"target_cpu_utilization_percentage" yaml:"target_cpu_utilization_percentage"`
+	TargetMemoryPercent *float64         `json:"target_memory_utilization_percentage" yaml:"target_memory_utilization_percentage"`
+}
+
+type HPAObservation struct {
+	UID             string
+	Name            string
+	Owner           string
+	MinReplicas     int32
+	MaxReplicas     int32
+	CurrentReplicas *int32
+	DesiredReplicas *int32
+	Metrics         []HPAMetricObservation
+}
+
+type HPAMetricObservation struct {
+	Type       string
+	Resource   ResourceType
+	Container  string
+	TargetType string
+	Target     float64
+	Current    *float64
+}
+
+type PodFailureObservation struct {
+	PodUID            string
+	PodName           string
+	Release           string
+	Restarts          *int32
+	TerminationReason string
+	TerminatedAt      int64
+	Evicted           bool
 }
 
 type Object struct {
-	Classification *analysis.ClassificationObservation `json:"-" yaml:"-"`
-	Cluster        *string                             `json:"cluster" yaml:"cluster"`
-	Name           string                              `json:"name" yaml:"name"`
-	Container      string                              `json:"container" yaml:"container"`
-	Pods           []Pod                               `json:"pods" yaml:"pods"`
-	HPA            *HPA                                `json:"hpa" yaml:"hpa"`
-	Namespace      string                              `json:"namespace" yaml:"namespace"`
-	Kind           string                              `json:"kind" yaml:"kind"`
-	Allocations    Allocations                         `json:"allocations" yaml:"allocations"`
-	Warnings       []string                            `json:"warnings" yaml:"warnings"`
-	Labels         map[string]string                   `json:"labels" yaml:"labels"`
-	Annotations    map[string]string                   `json:"annotations" yaml:"annotations"`
-	Releases       []Release                           `json:"releases,omitempty" yaml:"releases,omitempty"`
+	LivePodFailures []PodFailureObservation             `json:"-" yaml:"-"`
+	Classification  *analysis.ClassificationObservation `json:"-" yaml:"-"`
+	Cluster         *string                             `json:"cluster" yaml:"cluster"`
+	Name            string                              `json:"name" yaml:"name"`
+	Container       string                              `json:"container" yaml:"container"`
+	Pods            []Pod                               `json:"pods" yaml:"pods"`
+	HPA             *HPA                                `json:"hpa" yaml:"hpa"`
+	Namespace       string                              `json:"namespace" yaml:"namespace"`
+	Kind            string                              `json:"kind" yaml:"kind"`
+	Allocations     Allocations                         `json:"allocations" yaml:"allocations"`
+	Warnings        []string                            `json:"warnings" yaml:"warnings"`
+	Labels          map[string]string                   `json:"labels" yaml:"labels"`
+	Annotations     map[string]string                   `json:"annotations" yaml:"annotations"`
+	Releases        []Release                           `json:"releases,omitempty" yaml:"releases,omitempty"`
 
 	Selector             string             `json:"-" yaml:"-"`
 	UID                  string             `json:"-" yaml:"-"`

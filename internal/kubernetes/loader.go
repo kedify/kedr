@@ -273,21 +273,36 @@ func (l *Loader) hpas(ctx context.Context, client kubernetes.Interface) map[hpaK
 	items, err := client.AutoscalingV2().HorizontalPodAutoscalers(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, item := range items.Items {
-			h := hpaV2(item)
-			result[hpaKey{item.Namespace, item.Spec.ScaleTargetRef.Kind, item.Spec.ScaleTargetRef.Name}] = h
+			key := hpaKey{item.Namespace, item.Spec.ScaleTargetRef.Kind, item.Spec.ScaleTargetRef.Name}
+			result[key] = mergeHPA(result[key], hpaV2(item))
 		}
 		return result
 	}
 	v1items, err := client.AutoscalingV1().HorizontalPodAutoscalers(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, item := range v1items.Items {
-			result[hpaKey{item.Namespace, item.Spec.ScaleTargetRef.Kind, item.Spec.ScaleTargetRef.Name}] = hpaV1(item)
+			key := hpaKey{item.Namespace, item.Spec.ScaleTargetRef.Kind, item.Spec.ScaleTargetRef.Name}
+			result[key] = mergeHPA(result[key], hpaV1(item))
 		}
 	}
 	return result
 }
+func mergeHPA(existing, next *model.HPA) *model.HPA {
+	if existing == nil {
+		return next
+	}
+	// Preserve the legacy sizing and saved fields from the last HPA.
+	next.Live = append(existing.Live, next.Live...)
+	return next
+}
+
 func hpaV2(item autoscalingv2.HorizontalPodAutoscaler) *model.HPA {
 	h := &model.HPA{MinReplicas: item.Spec.MinReplicas, MaxReplicas: item.Spec.MaxReplicas, CurrentReplicas: &item.Status.CurrentReplicas, DesiredReplicas: item.Status.DesiredReplicas}
+	ref := item.Spec.ScaleTargetRef
+	if item.UID != "" && (ref.APIVersion == "apps/v1" ||
+		(ref.APIVersion == rolloutGVR.GroupVersion().String() && ref.Kind == "Rollout")) {
+		h.Live = []model.HPAObservation{observeHPA(&item)}
+	}
 	for _, metric := range item.Spec.Metrics {
 		if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil || metric.Resource.Target.AverageUtilization == nil {
 			continue

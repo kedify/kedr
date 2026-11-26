@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/kedify/kedr/internal/config"
@@ -219,9 +218,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		} else {
 			name = *cfg.FileOutput
 		}
-		fileRendered := rendered
-		if cfg.Format == "table" {
-			fileRendered = ansi.Strip(fileRendered)
+		fileRendered, renderErr := report.RenderFile(result, cfg)
+		if renderErr != nil {
+			return renderErr
 		}
 		if err = os.WriteFile(filepath.Clean(name), []byte(fileRendered), 0o600); err != nil {
 			return fmt.Errorf("write report: %w", err)
