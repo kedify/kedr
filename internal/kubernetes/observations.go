@@ -163,6 +163,8 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			continue
 		}
 		deleted := pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+		failure := model.PodFailureObservation{PodName: pod.Name, PodUID: string(pod.UID), Release: release,
+			Evicted: pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted"}
 		p := model.Pod{Name: pod.Name, UID: string(pod.UID), Release: release, CreatedAt: pod.CreationTimestamp.UnixMilli(), Deleted: deleted, Image: container.Image, Allocations: allocations(*container)}
 		if !deleted {
 			currentReleases[release] = true
@@ -171,6 +173,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			if status.Name != object.Container {
 				continue
 			}
+			recordContainerFailure(&failure, status)
 			p.ContainerID = status.ContainerID
 			if status.State.Running != nil && !status.State.Running.StartedAt.IsZero() {
 				p.ContainerStartedAt = status.State.Running.StartedAt.UnixMilli()
@@ -182,6 +185,9 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 				ts := terminated.FinishedAt.UnixMilli()
 				object.OOMKills = append(object.OOMKills, analysis.OOMKill{ID: fmt.Sprintf("%s/%s/%d", p.UID, object.Container, ts), PodUID: p.UID, WorkloadUID: object.UID, Release: release, Timestamp: ts})
 			}
+		}
+		if failure.PodUID != "" && (failure.Evicted || failure.Restarts != nil) {
+			object.LivePodFailures = append(object.LivePodFailures, failure)
 		}
 		object.Pods = append(object.Pods, p)
 	}

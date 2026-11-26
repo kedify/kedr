@@ -309,7 +309,14 @@ func renderTable(report model.Report, cfg *config.Config, color bool) string {
 	var notes strings.Builder
 	for _, i := range visible {
 		scan := report.Scans[i]
-		if text := scanNotes(scan, tableQuantity); text != "" {
+		text := scanNotes(scan, tableQuantity)
+		if live := liveEvidenceNotes(scan.Object); live != "" && !cfg.FileOutputDynamic && cfg.FileOutput == nil {
+			if text != "" {
+				text += "; "
+			}
+			text += live
+		}
+		if text != "" {
 			fmt.Fprintf(&notes, "\n%s/%s/%s: %s", scan.Object.Namespace, scan.Object.Name, scan.Object.Container, text)
 		}
 	}
