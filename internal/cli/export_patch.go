@@ -63,7 +63,7 @@ func newExportPatchCommand(openStore func() (runstore.Store, error)) *cobra.Comm
 			}
 			encoder := json.NewEncoder(cmd.OutOrStdout())
 			encoder.SetIndent("", "  ")
-			return encoder.Encode(reviewpatch.Review{Document: doc, Checks: reviewpatch.UnperformedChecks()})
+			return encoder.Encode(reviewpatch.Review{Document: doc, Checks: []reviewpatch.Check{}})
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "Saved run ID (defaults to the latest run)")

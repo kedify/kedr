@@ -75,10 +75,8 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		len(artifact.Holds) != 1 || artifact.Holds[0].Resource != analysis.ResourceCPU {
 		t.Fatalf("unexpected review: %+v", artifact)
 	}
-	for _, check := range result.Checks {
-		if check.Status != reviewpatch.Unperformed {
-			t.Fatalf("offline command claims a live check: %+v", check)
-		}
+	if result.Checks == nil || len(result.Checks) != 0 || result.CheckedAt != 0 {
+		t.Fatalf("offline export must have an empty check list and no live check time: %+v", result)
 	}
 
 	stdout.Reset()
