@@ -75,8 +75,12 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		len(artifact.Holds) != 1 || artifact.Holds[0].Resource != analysis.ResourceCPU {
 		t.Fatalf("unexpected review: %+v", artifact)
 	}
-	if result.Checks == nil || len(result.Checks) != 0 || result.CheckedAt != 0 {
-		t.Fatalf("offline export must have an empty check list and no live check time: %+v", result)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if string(fields["checks"]) != "[]" || fields["checkedAt"] != nil {
+		t.Fatalf("offline export returned checks %s and checkedAt %s", fields["checks"], fields["checkedAt"])
 	}
 
 	stdout.Reset()
