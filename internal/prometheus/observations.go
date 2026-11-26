@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metr
 func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, end time.Time) (strategy.Metrics, []string) {
 	result := strategy.Metrics{ClassifyWorkloads: c.cfg.ClassifyWorkloads, WindowStart: start.UnixMilli(), EvaluationTime: end.UnixMilli()}
 	var warnings []string
+	// CFS families whose source passed the conservative completeness audit.
+	certified := make(map[string]bool, len(cfsFamilies))
 	for _, metric := range MetricsForStrategy(c.cfg) {
 		rows, err := c.loadMetric(ctx, metric, object, start, end)
 		if err != nil {
@@ -49,8 +52,8 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		if metric == "CPUUsage" {
 			kind = analysis.SampleCPUCounterSeconds
 		}
-		data, excluded := convertUsage(rows, object, kind)
-		if excluded {
+		data, audit := convertUsageAudited(rows, object, kind)
+		if audit.excluded {
 			warnings = append(warnings, metric+"UnattributedSeries")
 		}
 		if len(data) == 0 {
@@ -68,7 +71,29 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		case "CPUPeriods":
 			result.Throttling.Periods = data
 		}
+		if slices.Contains(cfsFamilies, metric) {
+			certified[metric] = audit.certifies(data, object.Release)
+		}
 	}
+	// Failed or unqueried families leave certified[family] false. The shared
+	// engine still verifies per-pod coverage against the inventory.
+	// Certification is scoped to the exact present, nondeleted current-release
+	// Pods, so a recently deleted Pod of the same rollout cannot stand in for a
+	// live one by matching counts. Uncertified data is passed unchanged.
+	live := livePodUIDs(object)
+	complete := len(live) > 0
+	for _, family := range cfsFamilies {
+		complete = complete && certified[family]
+	}
+	if complete {
+		seconds, okS := scopeToLivePods(result.Throttling.Seconds, live)
+		throttled, okT := scopeToLivePods(result.Throttling.ThrottledPeriods, live)
+		periods, okP := scopeToLivePods(result.Throttling.Periods, live)
+		if complete = okS && okT && okP; complete {
+			result.Throttling.Seconds, result.Throttling.ThrottledPeriods, result.Throttling.Periods = seconds, throttled, periods
+		}
+	}
+	result.Throttling.SourceComplete = complete
 	return result, warnings
 }
 
@@ -221,6 +246,74 @@ func eventSamples(rows []series) ([]sampledSeries, error) {
 // Scrape replicas are selected deterministically; container lifetimes are never
 // joined by pod name. Cadvisor IDs distinguish past restarts within a pod UID.
 func convertUsage(rows []sampledSeries, object model.Object, kind analysis.SampleKind) ([]analysis.Series, bool) {
+	out, audit := convertUsageAudited(rows, object, kind)
+	return out, audit.excluded
+}
+
+var cfsFamilies = []string{"CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods"}
+
+// usageAudit records why a converted source cannot be certified complete.
+type usageAudit struct {
+	excluded   bool // unattributed, foreign-namespace or unmatched rows
+	inferredID bool // lifetime taken from pod status, not from the scraped series
+	duplicate  bool // several scraped rows resolved to the same container lifetime
+	ambiguous  bool // a row without a pod UID matched several pods of that name
+}
+
+// certifies reports whether a CFS family may claim complete source coverage:
+// only real scraped runtime IDs for the current release, with nothing dropped.
+func (a usageAudit) certifies(data []analysis.Series, release string) bool {
+	if a.excluded || a.inferredID || a.duplicate || a.ambiguous || release == "" {
+		return false
+	}
+	for _, row := range data {
+		if row.Release == release {
+			return true
+		}
+	}
+	return false
+}
+
+// livePodUIDs returns the UIDs of present, nondeleted Pods of the current
+// release, or nil when any of them is unattributable or repeated.
+func livePodUIDs(object model.Object) map[string]bool {
+	if object.Release == "" {
+		return nil
+	}
+	live := map[string]bool{}
+	for _, pod := range object.Pods {
+		if pod.Deleted || pod.EndedAt != 0 || pod.Release != object.Release {
+			continue
+		}
+		if pod.UID == "" || live[pod.UID] {
+			return nil
+		}
+		live[pod.UID] = true
+	}
+	return live
+}
+
+// scopeToLivePods keeps only rows of live Pods and reports whether every live
+// Pod has exactly one row, so certified coverage is tied to those Pods alone.
+func scopeToLivePods(rows []analysis.Series, live map[string]bool) ([]analysis.Series, bool) {
+	var out []analysis.Series
+	seen := make(map[string]bool, len(live))
+	for _, row := range rows {
+		if !live[row.PodUID] {
+			continue
+		}
+		if seen[row.PodUID] {
+			return nil, false
+		}
+		seen[row.PodUID] = true
+		out = append(out, row)
+	}
+	return out, len(seen) == len(live)
+}
+
+// convertUsageAudited is convertUsage plus the provenance needed to decide
+// whether a raw CFS source may claim complete coverage.
+func convertUsageAudited(rows []sampledSeries, object model.Object, kind analysis.SampleKind) ([]analysis.Series, usageAudit) {
 	pods := make(map[string][]model.Pod, len(object.Pods))
 	for _, pod := range object.Pods {
 		pods[pod.Name] = append(pods[pod.Name], pod)
@@ -234,23 +327,23 @@ func convertUsage(rows []sampledSeries, object model.Object, kind analysis.Sampl
 	})
 	seen := map[string]bool{}
 	var out []analysis.Series
-	excluded := false
+	var audit usageAudit
 	for _, row := range rows {
 		candidates := pods[row.labels["pod"]]
 		if len(candidates) == 0 {
-			excluded = true
+			audit.excluded = true
 			continue
 		}
 		if ns := row.labels["namespace"]; ns != "" && ns != object.Namespace {
-			excluded = true
+			audit.excluded = true
 			continue
 		}
-		matched := false
+		matched := 0
 		for _, pod := range candidates {
 			if pod.UID == "" || pod.Release == "" || pod.CreatedAt <= 0 || row.labels["uid"] != "" && row.labels["uid"] != pod.UID {
 				continue
 			}
-			matched = true
+			matched++
 			lifetime := row.labels["id"]
 			if lifetime == "" {
 				lifetime = row.labels["container_id"]
@@ -258,13 +351,17 @@ func convertUsage(rows []sampledSeries, object model.Object, kind analysis.Sampl
 			lowerBound := pod.CreatedAt
 			if lifetime == "" {
 				if pod.ContainerID == "" || pod.ContainerStartedAt <= 0 {
-					excluded = true
+					audit.excluded = true
 					continue
 				}
+				// Continuity of an unlabeled scraped series with this runtime ID is
+				// not proven; usable for sizing, never for certifying completeness.
+				audit.inferredID = true
 				lifetime, lowerBound = pod.ContainerID, max(lowerBound, pod.ContainerStartedAt)
 			}
 			id := pod.UID + "/" + object.Container + "/" + lifetime
 			if seen[id] {
+				audit.duplicate = true
 				continue
 			}
 			s := analysis.Series{ID: id, PodUID: pod.UID, WorkloadUID: object.UID, Release: pod.Release, Kind: kind}
@@ -279,12 +376,14 @@ func convertUsage(rows []sampledSeries, object model.Object, kind analysis.Sampl
 			seen[id] = true
 			out = append(out, s)
 		}
-		if !matched {
-			excluded = true
+		if matched == 0 {
+			audit.excluded = true
+		} else if matched > 1 && row.labels["uid"] == "" {
+			audit.ambiguous = true
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, excluded
+	return out, audit
 }
 
 func convertOOMEvents(rows []sampledSeries, object model.Object, start, end int64) []analysis.OOMKill {

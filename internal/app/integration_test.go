@@ -138,7 +138,9 @@ func discoveryMetricsAnalyzerReport(t *testing.T, strategyName, kind string) {
 		t.Fatal(err)
 	}
 	memory := result.Analysis.Results[0]
-	if memory.MemoryLeak == nil || memory.MemoryLeak.Status != analysis.MemoryLeakPotential || len(memory.Evidence.OOMKills) != 1 || memory.OOMAdjustment == nil {
+	// kube-state-metrics supplies the termination time but never the limit in
+	// effect then: the event stays evidence, blocks reductions, and sizes nothing.
+	if memory.MemoryLeak == nil || memory.MemoryLeak.Status != analysis.MemoryLeakPotential || len(memory.Evidence.OOMKills) != 1 || memory.Evidence.OOMKills[0].MemoryLimitBytes != 0 || memory.OOMAdjustment != nil || !slices.Contains(memory.DataQuality.Reasons, analysis.ReasonOOMLimitUnknown) {
 		t.Fatalf("diagnostics lost across adapters: %+v", memory)
 	}
 	features := result.Analysis.Classifications[0].Features
@@ -239,22 +241,45 @@ func TestOOMKilledPodWithoutMetrics(t *testing.T) {
 		if err != nil || object.CurrentPods() != 0 || object.DeletedPods() != 1 || len(object.OOMKills) != 1 {
 			t.Fatalf("observe OOM: %+v %v", object, err)
 		}
+		// The Pod status records the OOMKilled termination but not the limit in
+		// effect at that instant; the live spec is only the current setting.
+		if object.OOMKills[0].MemoryLimitBytes != 0 {
+			t.Fatalf("real Pod read must leave the termination-time limit unknown: %+v", object.OOMKills[0])
+		}
+		// Positive OOM sizing needs a known event-time limit. Inject only an
+		// explicit synthetic anchor into a clone; the observed object stays unknown.
+		anchored := object
+		anchored.OOMKills = append([]analysis.OOMKill(nil), object.OOMKills...)
+		anchored.OOMKills[0].MemoryLimitBytes = 50 * 1024 * 1024
 		metrics := strategy.Metrics{WindowStart: now.Add(-48 * time.Hour).UnixMilli(), EvaluationTime: time.Now().UnixMilli()}
 		for _, tc := range []struct {
-			enabled bool
-			minimum int
-			buffer  float64
-			wantMi  float64
-		}{{false, 100, 50, 0}, {true, 100, 50, 100}, {true, 10, 50, 75}, {true, 10, 25, 62.5}} {
+			enabled  bool
+			anchored bool
+			minimum  int
+			buffer   float64
+			wantMi   float64
+		}{{false, false, 100, 50, 0}, {true, false, 100, 50, 0}, {true, true, 100, 50, 100}, {true, true, 10, 50, 75}, {true, true, 10, 25, 62.5}} {
 			cfg.UseOOMKillData, cfg.MemoryMinValue, cfg.OOMMemoryBuffer = tc.enabled, tc.minimum, tc.buffer
-			result, err := strategy.Run(cfg, metrics, object)
+			subject := object
+			if tc.anchored {
+				subject = anchored
+			}
+			result, err := strategy.Run(cfg, metrics, subject)
 			if err != nil {
 				t.Fatal(err)
 			}
-			scan := recommend.Scan(object, result)
+			scan := recommend.Scan(subject, result)
+			sized := tc.enabled && tc.anchored
 			for _, value := range []model.MaybeValue{scan.Recommended.Requests[model.Memory].Value, scan.Recommended.Limits[model.Memory].Value} {
-				if tc.enabled && (!value.Set || value.Unknown || value.Value != tc.wantMi*1024*1024) || !tc.enabled && !value.Unknown {
+				if sized && (!value.Set || value.Unknown || value.Value != tc.wantMi*1024*1024) || !sized && !value.Unknown {
 					t.Fatalf("%s, %+v: wrong OOM recommendation: %+v", name, tc, value)
+				}
+			}
+			if tc.enabled && !tc.anchored {
+				// An unknown event-time limit is retained evidence, never a sizing input.
+				memory := result.Analysis.Results[0]
+				if memory.DataQuality.Status != analysis.DataQualityUnavailable || memory.NoActionReason == "" || !slices.Contains(memory.DataQuality.Reasons, analysis.ReasonMissingUsage) || !slices.Contains(memory.DataQuality.Reasons, analysis.ReasonOOMLimitUnknown) || memory.OOMAdjustment != nil || len(memory.Recommendations) != 0 || len(memory.Evidence.OOMKills) != 1 || memory.Evidence.OOMKills[0].MemoryLimitBytes != 0 {
+					t.Fatalf("%s: unknown OOM limit without usage must be no action: %+v", name, memory)
 				}
 			}
 			if !scan.Recommended.Requests[model.CPU].Value.Unknown {
@@ -280,7 +305,13 @@ func TestOOMKilledPodWithoutMetrics(t *testing.T) {
 				t.Fatal(err)
 			}
 			doc := explain.Build(loaded, loaded.Rows[0])
-			if doc.Cards[2].Outcome != "recommended" || !strings.Contains(doc.Cards[2].Reason, "were not required") || !strings.Contains(doc.Cards[2].Reason, "current memory settings") {
+			if !tc.anchored {
+				if doc.Cards[2].Outcome == "recommended" || len(doc.OOMEvents) != 1 || !strings.Contains(doc.OOMEvents[0].Label, "limit at termination unknown") {
+					t.Fatalf("saved explanation must keep the unknown OOM event as a no-action decision: %+v %+v", doc.Cards[2], doc.OOMEvents)
+				}
+				continue
+			}
+			if doc.Cards[2].Outcome != "recommended" || !strings.Contains(doc.Cards[2].Reason, "were not required") || !strings.Contains(doc.Cards[2].Steps[0].Detail, "50 MiB limit at termination") || strings.Contains(doc.Cards[2].Steps[0].Detail, "(fallback)") {
 				t.Fatalf("saved explanation lost OOM-only decision: %+v", doc.Cards[2])
 			}
 		}

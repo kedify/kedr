@@ -71,6 +71,10 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 		observation.Throttling = metrics.Throttling
 		observation.Issues = append(append([]string(nil), observation.Issues...), object.Warnings...)
 		c.Classification = &observation
+	} else if cfg.Strategy == "simple_limit" {
+		// Raw CFS observations feed the shared CPU limit-reduction guard. Without
+		// a classification policy the engine derives no workload badges from them.
+		c.Classification = &analysis.ClassificationObservation{Throttling: metrics.Throttling}
 	}
 	if cfg.UseOOMKillData {
 		c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
@@ -260,6 +264,8 @@ func compareReleases(cfg *config.Config, metrics Metrics, object model.Object, p
 			past.IdentityAmbiguous, past.ReleaseStartInferred = false, false
 			pastMetrics := metrics
 			pastMetrics.CPU, pastMetrics.Memory = releaseSeries(metrics.CPU, release.ID), releaseSeries(metrics.Memory, release.ID)
+			// Throttling evidence and its completeness describe current pods only.
+			pastMetrics.Throttling = analysis.CPUThrottlingObservation{}
 			last := int64(0)
 			for _, rows := range [][]analysis.Series{pastMetrics.CPU, pastMetrics.Memory} {
 				for _, row := range rows {
