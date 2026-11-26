@@ -94,7 +94,7 @@ func recordContainerFailure(failure *model.PodFailureObservation, status corev1.
 	if previous != nil && (latest == nil || latest.FinishedAt.Before(&previous.FinishedAt)) {
 		latest = previous
 	}
-	if latest != nil && !latest.FinishedAt.IsZero() {
+	if latest != nil && !latest.FinishedAt.IsZero() && (status.RestartCount > 0 || latest.Reason != "Completed") {
 		failure.TerminatedAt = latest.FinishedAt.UnixMilli()
 		switch latest.Reason {
 		case "OOMKilled", "Error", "Completed", "ContainerCannotRun", "StartError", "DeadlineExceeded":
