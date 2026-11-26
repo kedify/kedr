@@ -161,7 +161,9 @@ current context. `--offline` and `--format text` need no credentials.
 
 Use `kedr export-patch <row> [--run <run-id>]` to export a Deployment container
 patch for review as JSON. The export uses the saved decision without network
-access, preserves held settings, and marks live checks unperformed. Use `--cluster-id` to use a registered cluster ID in place of the saved Prometheus label or kubeconfig context name.
+access and preserves held settings. An offline export has an empty `checks` list
+and omits `checkedAt`. Use `--cluster-id` to use a registered cluster ID in place
+of the saved Prometheus label or kubeconfig context name.
 
 The report explains the strategy's actual behavior, including retained limits,
 material-change thresholds, HPA suppression, insufficient evidence, OOM adjustments,
