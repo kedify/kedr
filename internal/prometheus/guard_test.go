@@ -234,8 +234,9 @@ func TestCFSCertificationRequiresCurrentContainerRuntime(t *testing.T) {
 			}
 			if tc.want {
 				rows := metrics.Throttling.Periods
-				if len(rows) != 1 || len(rows[0].Samples) != 3 || rows[0].Samples[0].Timestamp < object.Pods[0].ContainerStartedAt {
-					t.Fatalf("certification selected previous runtime samples: %+v", rows)
+				if len(rows) != 2 || len(rows[0].Samples) != 3 || rows[0].Samples[0].Timestamp < object.Pods[0].ContainerStartedAt ||
+					!strings.Contains(rows[1].ID, "before.scope") {
+					t.Fatalf("expected certified current samples followed by advisory previous runtime: %+v", rows)
 				}
 			}
 		})

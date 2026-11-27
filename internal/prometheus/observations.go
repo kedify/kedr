@@ -75,8 +75,8 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 			verified[metric] = currentRuntimeSeries(rows, object, live, kind)
 		}
 	}
-	// Keep earlier rollouts for the guard's segment boundary. If current
-	// coverage is proved, only current-runtime rows can represent this release.
+	// Use verified current-runtime samples for proof. Preserve history from
+	// earlier runtimes for pressure evidence and rollback boundaries.
 	complete := len(live) > 0
 	if c.cfg.Strategy == "simple_limit" {
 		complete = complete && len(verified["CPUUsage"]) == len(live)
@@ -85,9 +85,9 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		complete = complete && len(verified[family]) == len(live)
 	}
 	if complete {
-		result.Throttling.Seconds = withCurrentCounters(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Release)
-		result.Throttling.ThrottledPeriods = withCurrentCounters(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Release)
-		result.Throttling.Periods = withCurrentCounters(result.Throttling.Periods, verified["CPUPeriods"], object.Release)
+		result.Throttling.Seconds = withCurrentCounters(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Container, object.Release)
+		result.Throttling.ThrottledPeriods = withCurrentCounters(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Container, object.Release)
+		result.Throttling.Periods = withCurrentCounters(result.Throttling.Periods, verified["CPUPeriods"], object.Container, object.Release)
 	}
 	result.Throttling.SourceComplete = complete
 	return result, warnings
@@ -338,9 +338,16 @@ func normalizeRuntimeID(id string) string {
 	return id
 }
 
-func withCurrentCounters(history, current []analysis.Series, release string) []analysis.Series {
+func withCurrentCounters(history, current []analysis.Series, container, release string) []analysis.Series {
+	lifetime := func(series analysis.Series) string {
+		return normalizeRuntimeID(strings.TrimPrefix(series.ID, series.PodUID+"/"+container+"/"))
+	}
+	active := make(map[string]string, len(current))
+	for _, series := range current {
+		active[series.PodUID] = lifetime(series)
+	}
 	for _, series := range history {
-		if series.Release != release {
+		if id, found := active[series.PodUID]; !found || series.Release != release || lifetime(series) != id {
 			current = append(current, series)
 		}
 	}
