@@ -28,9 +28,9 @@ func pair(timestamp float64, value string) []json.RawMessage {
 func TestUsageIdentityAndContainerLifetimes(t *testing.T) {
 	object := model.Object{UID: "workload", Container: "app", Namespace: "ns", Pods: []model.Pod{{Name: "p", UID: "new-pod", Release: "A", CreatedAt: 10000, ContainerID: "runtime://new", ContainerStartedAt: 30000}}}
 	rows := []sampledSeries{
-		{labels: map[string]string{"pod": "p", "id": "old-container"}, samples: []analysis.Sample{{Timestamp: 9000, Value: 100}, {Timestamp: 12000, Value: 2}}},
-		{labels: map[string]string{"pod": "p", "id": "new-container"}, samples: []analysis.Sample{{Timestamp: 32000, Value: 4}}},
-		{labels: map[string]string{"pod": "p"}, samples: []analysis.Sample{{Timestamp: 12000, Value: 200}, {Timestamp: 33000, Value: 5}}},
+		{labels: map[string]string{"pod": "p", "uid": "new-pod", "id": "old-container"}, samples: []analysis.Sample{{Timestamp: 9000, Value: 100}, {Timestamp: 12000, Value: 2}}},
+		{labels: map[string]string{"pod": "p", "id": "/kubepods/podnew-pod/new"}, samples: []analysis.Sample{{Timestamp: 32000, Value: 4}}},
+		{labels: map[string]string{"pod": "p", "uid": "new-pod"}, samples: []analysis.Sample{{Timestamp: 12000, Value: 200}, {Timestamp: 33000, Value: 5}}},
 		{labels: map[string]string{"pod": "p", "uid": "old-pod", "id": "old-uid"}, samples: []analysis.Sample{{Timestamp: 34000, Value: 300}}},
 		{labels: map[string]string{"pod": "unknown", "id": "unowned"}, samples: []analysis.Sample{{Timestamp: 34000, Value: 400}}},
 	}
@@ -53,19 +53,23 @@ func TestUsageIdentityAndContainerLifetimes(t *testing.T) {
 }
 
 func TestOOMUsesTerminationValueAndUnknownHistoricalLimit(t *testing.T) {
-	object := model.Object{UID: "workload", Container: "app", Pods: []model.Pod{{Name: "p", UID: "pod-uid", Release: "A", CreatedAt: 1000}}}
+	object := model.Object{UID: "workload", Release: "A", Container: "app", Pods: []model.Pod{{Name: "p", UID: "pod-uid", Release: "A", CreatedAt: 1000}}}
 	raw := []series{{Metric: map[string]string{"pod": "p", "uid": "pod-uid"}, Values: []samplePair{{100, 5}, {200, 5}}}}
 	rows, err := eventSamples(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kills := convertOOMEvents(rows, object, 1000, 300000)
-	if len(kills) != 1 || kills[0].Timestamp != 5000 || kills[0].MemoryLimitBytes != 0 || kills[0].ID != "pod-uid/app/5000" {
+	kills, incomplete := convertOOMEvents(rows, object, 1000, 300000)
+	if incomplete || len(kills) != 1 || kills[0].Timestamp != 5000 || kills[0].MemoryLimitBytes != 0 || kills[0].ID != "pod-uid/app/5000" {
 		t.Fatalf("bad OOM adapter: %+v", kills)
 	}
 	rows[0].labels["uid"] = "other-uid"
-	if len(convertOOMEvents(rows, object, 1000, 300000)) != 0 {
+	if kills, incomplete = convertOOMEvents(rows, object, 1000, 300000); len(kills) != 0 || incomplete {
 		t.Fatal("other pod's OOM attributed by name")
+	}
+	delete(rows[0].labels, "uid")
+	if kills, incomplete = convertOOMEvents(rows, object, 1000, 300000); len(kills) != 0 || !incomplete {
+		t.Fatalf("name-only OOM became evidence: %+v, %v", kills, incomplete)
 	}
 }
 
@@ -160,7 +164,7 @@ func TestChunkLifetimeFilteringPreservesUsage(t *testing.T) {
 				points = append(points, []any{float64(ts) / 1000, "10"})
 			}
 		}
-		data, marshalErr := json.Marshal(map[string]any{"status": "success", "data": map[string]any{"result": []any{map[string]any{"metric": map[string]string{"pod": "p", "id": "lifetime"}, "values": points}}}})
+		data, marshalErr := json.Marshal(map[string]any{"status": "success", "data": map[string]any{"result": []any{map[string]any{"metric": map[string]string{"pod": "p", "uid": "new", "id": "lifetime"}, "values": points}}}})
 		if marshalErr != nil {
 			return nil, marshalErr
 		}
@@ -174,7 +178,7 @@ func TestChunkLifetimeFilteringPreservesUsage(t *testing.T) {
 		t.Fatalf("queried before pod creation: %d requests", requests.Load())
 	}
 	got, excluded := convertUsage(rows, object, analysis.SampleGauge)
-	want, _ := convertUsage([]sampledSeries{{labels: map[string]string{"pod": "p", "id": "lifetime"}, samples: []analysis.Sample{
+	want, _ := convertUsage([]sampledSeries{{labels: map[string]string{"pod": "p", "uid": "new", "id": "lifetime"}, samples: []analysis.Sample{
 		{Timestamp: birth, Value: 10}, {Timestamp: birth + 1000, Value: 10}, {Timestamp: end.UnixMilli(), Value: 10},
 	}}}, object, analysis.SampleGauge)
 	if excluded || !reflect.DeepEqual(got, want) {
@@ -265,15 +269,15 @@ func TestOOMChunksRetainObservationsAfterPodEnded(t *testing.T) {
 			t.Error("OOM expression must use query_range")
 		}
 		at, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
-		body := fmt.Sprintf(`{"status":"success","data":{"result":[{"metric":{"pod":"p"},"values":[[%d,"%d"]]}]}}`, at, termination.Unix())
+		body := fmt.Sprintf(`{"status":"success","data":{"result":[{"metric":{"pod":"p","uid":"uid"},"values":[[%d,"%d"]]}]}}`, at, termination.Unix())
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	rows, err := client.loadMetric(context.Background(), "OOMKilledTimestamp", object, start, start.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	kills := convertOOMEvents(rows, object, start.UnixMilli(), start.Add(24*time.Hour).UnixMilli())
-	if requests.Load() != 4 || len(kills) != 1 || kills[0].Timestamp != termination.UnixMilli() {
+	kills, incomplete := convertOOMEvents(rows, object, start.UnixMilli(), start.Add(24*time.Hour).UnixMilli())
+	if incomplete || requests.Load() != 4 || len(kills) != 1 || kills[0].Timestamp != termination.UnixMilli() {
 		t.Fatalf("OOM event lost: requests=%d kills=%+v", requests.Load(), kills)
 	}
 }
@@ -291,7 +295,10 @@ func TestReusedStatefulPodNamesDoNotMergeReleases(t *testing.T) {
 		{Name: "db-0", UID: "old", Release: "A", CreatedAt: 1000, EndedAt: 10000, Deleted: true},
 		{Name: "db-0", UID: "new", Release: "B", CreatedAt: 10000},
 	}}
-	rows := []sampledSeries{{labels: map[string]string{"pod": "db-0", "id": "container"}, samples: []analysis.Sample{{Timestamp: 5000, Value: 100}, {Timestamp: 15000, Value: 10}}}}
+	rows := []sampledSeries{
+		{labels: map[string]string{"pod": "db-0", "id": "/kubepods/podold/retired"}, samples: []analysis.Sample{{Timestamp: 5000, Value: 100}, {Timestamp: 15000, Value: 100}}},
+		{labels: map[string]string{"pod": "db-0", "uid": "new", "id": "current"}, samples: []analysis.Sample{{Timestamp: 15000, Value: 10}}},
+	}
 	usage, excluded := convertUsage(rows, object, analysis.SampleGauge)
 	if excluded || len(usage) != 2 {
 		t.Fatalf("lost historical incarnation: %+v, %v", usage, excluded)
@@ -301,8 +308,15 @@ func TestReusedStatefulPodNamesDoNotMergeReleases(t *testing.T) {
 			t.Fatalf("pod incarnations mixed: %+v", row)
 		}
 	}
-	kills := convertOOMEvents(rows, object, 1000, 20000)
-	if len(kills) != 2 || kills[0].Release == kills[1].Release {
+	// An old cAdvisor scrape with just the reused name and a foreign runtime
+	// cannot be relabeled with the replacement Pod UID, even when it is fresh.
+	unverified := []sampledSeries{{labels: map[string]string{"pod": "db-0", "id": "foreign-runtime"}, samples: []analysis.Sample{{Timestamp: 15000, Value: 999}}}}
+	if got, dropped := convertUsage(unverified, object, analysis.SampleGauge); !dropped || len(got) > 0 {
+		t.Fatalf("reused name attributed foreign samples: %+v", got)
+	}
+	rows[0].labels["uid"] = "old" // KSM provides an explicit Pod UID on its event.
+	kills, incomplete := convertOOMEvents(rows, object, 1000, 20000)
+	if incomplete || len(kills) != 2 || kills[0].Release == kills[1].Release {
 		t.Fatalf("OOM releases mixed: %+v", kills)
 	}
 }

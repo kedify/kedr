@@ -4,6 +4,7 @@ package strategy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kedify/kedr/internal/config"
@@ -68,7 +69,9 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 		entry.obs.CurrentLimit = currentSignal(object, entry.resource, true)
 	}
 	c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
-	c.OOMCoverageIncomplete = metrics.OOMCoverageIncomplete
+	c.OOMCoverageIncomplete = metrics.OOMCoverageIncomplete || slices.ContainsFunc(c.OOMKills, func(kill analysis.OOMKill) bool {
+		return kill.WorkloadUID == target.WorkloadUID && kill.Release == target.Release && kill.Timestamp > metrics.EvaluationTime
+	})
 	if cfg.ClassifyWorkloads {
 		observation := analysis.ClassificationObservation{}
 		if object.Classification != nil {

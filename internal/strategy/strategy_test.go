@@ -221,6 +221,7 @@ func TestSmallUnsetAllocationsAreInitialized(t *testing.T) {
 		for _, cpu := range []float64{.024, .002} {
 			cfg, metrics, object := fixture(4)
 			cfg.Strategy = name
+			object.Pods[0].ContainerStartedAt = metrics.WindowStart
 			cfg.MemoryMinValue = 1
 			object.Allocations = model.EmptyAllocations()
 			object.Pods[0].Allocations = object.Allocations
@@ -410,5 +411,14 @@ func TestRetiredPodDoesNotCoverCurrentReplacement(t *testing.T) {
 	memory := run(t, cfg, metrics, obj).Analysis.Results[0]
 	if len(memory.Recommendations) != 0 || memory.Evidence.Inventory.Observed != 0 {
 		t.Fatalf("retired samples counted as current coverage: %+v", memory.Evidence.Inventory)
+	}
+}
+
+func TestFutureLiveOOMHoldsOnlyMemoryDecreases(t *testing.T) {
+	cfg, metrics, object := fixture(4)
+	object.OOMKills = []analysis.OOMKill{{ID: "future", PodUID: object.Pods[0].UID, WorkloadUID: object.UID, Release: object.Release, Timestamp: metrics.EvaluationTime + 2000}}
+	result := run(t, cfg, metrics, object)
+	if len(result.Analysis.Results[0].Recommendations) != 0 || result.Resources[model.CPU].Request.Value >= 1 {
+		t.Fatalf("clock skew affected independent sizing: %+v", result.Resources)
 	}
 }

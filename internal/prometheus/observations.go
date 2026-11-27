@@ -62,7 +62,7 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 			continue
 		}
 		if metric == "OOMKilledTimestamp" {
-			result.OOMKills = convertOOMEvents(rows, object, result.WindowStart, result.EvaluationTime)
+			result.OOMKills, result.OOMCoverageIncomplete = convertOOMEvents(rows, object, result.WindowStart, result.EvaluationTime)
 			continue // No positive events is not a memory-usage collection failure.
 		}
 		kind := analysis.SampleGauge
@@ -71,6 +71,9 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		}
 		if isQuota {
 			verified[metric] = currentRuntimeSeries(rows, object, live, kind)
+			if len(verified[metric]) != len(live) {
+				warnings = append(warnings, metric+"CurrentRuntimeUnavailable")
+			}
 			continue
 		}
 		data, audit := convertUsageAudited(rows, object, kind)
@@ -383,6 +386,12 @@ func atAppliedQuota(counters, quotas, periods []analysis.Series, limit float64) 
 	return counters
 }
 
+func cgroupMatchesPod(id, uid string) bool {
+	// cgroupfs and systemd spell the immutable Pod UID differently.
+	return strings.Contains(id, "/pod"+uid+"/") ||
+		strings.Contains(id, "-pod"+strings.ReplaceAll(uid, "-", "_")+".slice/")
+}
+
 func normalizeRuntimeID(id string) string {
 	if _, suffix, ok := strings.Cut(id, "://"); ok {
 		return suffix
@@ -449,12 +458,25 @@ func convertUsageAudited(rows []sampledSeries, object model.Object, kind analysi
 			if pod.UID == "" || pod.Release == "" || pod.CreatedAt <= 0 || row.labels["uid"] != "" && row.labels["uid"] != pod.UID {
 				continue
 			}
-			matched++
 			lifetime := row.labels["id"]
 			if lifetime == "" {
 				lifetime = row.labels["container_id"]
 			}
-			lowerBound := pod.CreatedAt
+			runtimeID := normalizeRuntimeID(lifetime)
+			running := pod.ContainerStartedAt > 0 && runtimeID != "" && runtimeID == normalizeRuntimeID(pod.ContainerID)
+			if row.labels["uid"] == "" && !running && !cgroupMatchesPod(lifetime, pod.UID) {
+				continue
+			}
+			matched++
+			lowerBound, upperBound := pod.CreatedAt, pod.EndedAt
+			if running {
+				lowerBound = max(lowerBound, pod.ContainerStartedAt)
+			} else if lifetime != "" && pod.ContainerID != "" && pod.ContainerStartedAt > 0 {
+				// A scrape of the preceding incarnation cannot attest to current usage.
+				if upperBound == 0 || pod.ContainerStartedAt < upperBound {
+					upperBound = pod.ContainerStartedAt
+				}
+			}
 			if lifetime == "" {
 				if pod.ContainerID == "" || pod.ContainerStartedAt <= 0 {
 					audit.excluded = true
@@ -472,7 +494,7 @@ func convertUsageAudited(rows []sampledSeries, object model.Object, kind analysi
 			}
 			s := analysis.Series{ID: id, PodUID: pod.UID, WorkloadUID: object.UID, Release: pod.Release, Kind: kind}
 			for _, sample := range row.samples {
-				if sample.Timestamp >= lowerBound && (pod.EndedAt == 0 || sample.Timestamp < pod.EndedAt) {
+				if sample.Timestamp >= lowerBound && (upperBound == 0 || sample.Timestamp < upperBound) {
 					s.Samples = append(s.Samples, sample)
 				}
 			}
@@ -492,7 +514,8 @@ func convertUsageAudited(rows []sampledSeries, object model.Object, kind analysi
 	return out, audit
 }
 
-func convertOOMEvents(rows []sampledSeries, object model.Object, start, end int64) []analysis.OOMKill {
+func convertOOMEvents(rows []sampledSeries, object model.Object, start, end int64) ([]analysis.OOMKill, bool) {
+	incomplete := false
 	pods := make(map[string][]model.Pod, len(object.Pods))
 	for _, pod := range object.Pods {
 		pods[pod.Name] = append(pods[pod.Name], pod)
@@ -509,7 +532,11 @@ func convertOOMEvents(rows []sampledSeries, object model.Object, start, end int6
 			}
 			for _, sample := range row.samples {
 				ts := sample.Timestamp
-				if ts < max(start, pod.CreatedAt) || ts > end || pod.EndedAt > 0 && ts >= pod.EndedAt {
+				if ts < max(start, pod.CreatedAt) || pod.EndedAt > 0 && ts >= pod.EndedAt {
+					continue
+				}
+				if row.labels["uid"] == "" || ts > end {
+					incomplete = incomplete || pod.Release == object.Release
 					continue
 				}
 				id := strings.Join([]string{pod.UID, object.Container, strconv.FormatInt(ts, 10)}, "/")
@@ -523,5 +550,5 @@ func convertOOMEvents(rows []sampledSeries, object model.Object, start, end int6
 		}
 	}
 	sort.Slice(kills, func(i, j int) bool { return kills[i].ID < kills[j].ID })
-	return kills
+	return kills, incomplete
 }

@@ -396,6 +396,8 @@ The Prometheus-compatible service should expose:
 - For optional OOM history: `kube_pod_container_status_last_terminated_reason`
   and `kube_pod_container_status_last_terminated_timestamp`.
 
+Usage is attributed by the metric's Pod UID, a matching Pod UID in its cgroup path,
+or the verified live runtime. A reused Pod name alone cannot establish membership.
 Usage queries fetch individual CPU counters and memory gauges using instant
 range-vector queries, not precomputed rates/percentiles/maxima or a resampled
 `query_range` grid. Every original scrape timestamp is preserved. Batches contain
