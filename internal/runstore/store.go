@@ -100,7 +100,7 @@ func NewRow(scan model.Scan, metrics strategy.Metrics, conn Connection) Row {
 	for _, pod := range scan.Object.Pods {
 		row.Identity.Pods = append(row.Identity.Pods, Pod{Name: pod.Name, UID: pod.UID, Release: pod.Release, CreatedAt: pod.CreatedAt, EndedAt: pod.EndedAt, ContainerStartedAt: pod.ContainerStartedAt, ContainerID: pod.ContainerID})
 	}
-	row.Digest, _ = MetricsDigest(metrics)
+	row.Digest, _ = row.MetricsDigest(metrics)
 	return row
 }
 func (r Row) Object() model.Object {

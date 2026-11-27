@@ -242,3 +242,39 @@ func TestCFSCertificationRequiresCurrentContainerRuntime(t *testing.T) {
 		})
 	}
 }
+
+func TestSimpleLimitRecommendsLowerCapWithVerifiedCurrentRuntime(t *testing.T) {
+	cfg := config.Default("simple_limit")
+	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	const points = 180
+	client, _ := fakePrometheus(t, cfg, func(query string) (int, string) {
+		switch {
+		case strings.HasPrefix(query, "container_cpu_usage_seconds_total"):
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(i int) float64 { return .6 * float64(i) }))
+		case strings.HasPrefix(query, "container_memory_working_set_bytes"):
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(int) float64 { return 100 << 20 }))
+		case strings.HasPrefix(query, "container_cpu_cfs_periods_total"):
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, counter))
+		default:
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(int) float64 { return 0 }))
+		}
+	})
+	end := time.Unix(guardStart+60*points, 0)
+	object := guardObject()
+	object.ObservedAt, object.InventoryAvailable = end.UnixMilli(), true
+	object.Allocations.Requests = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(1), model.Memory: model.Number(512 << 20)}
+	object.Allocations.Limits = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(2), model.Memory: model.Number(512 << 20)}
+	object.Pods[0].Allocations = object.Allocations
+	metrics, _ := client.GatherWindow(context.Background(), object, time.Unix(guardStart, 0), end)
+	result, err := strategy.Run(cfg, metrics, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := result.Resources[model.CPU].Limit
+	if !metrics.Throttling.SourceComplete || result.Analysis.EffectivePolicy.Classification != nil || !limit.Set || limit.Value >= 2 {
+		t.Fatalf("complete current-runtime evidence should lower the cap: limit=%+v analysis=%+v", limit, result.Analysis.Results)
+	}
+}

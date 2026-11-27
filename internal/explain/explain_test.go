@@ -196,3 +196,27 @@ func TestVisualFixtures(t *testing.T) {
 		}
 	}
 }
+
+func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
+	run, row, metrics := fixture(t)
+	row.Scan.Analysis.EffectivePolicy.CPU.LimitReductionGuard = &analysis.CPULimitReductionGuardPolicy{}
+	doc := Build(run, row)
+	doc.AddMetrics(row, metrics, nil)
+	if !strings.HasPrefix(doc.ChartStatus, "Unverifiable") {
+		t.Fatalf("legacy digest verified a guarded decision: %s", doc.ChartStatus)
+	}
+	var err error
+	row.Digest, err = row.MetricsDigest(metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.AddMetrics(row, metrics, nil)
+	if !strings.HasPrefix(doc.ChartStatus, "Verified") {
+		t.Fatalf("unchanged guarded digest was not verified: %s", doc.ChartStatus)
+	}
+	metrics.Throttling.SourceComplete = !metrics.Throttling.SourceComplete
+	doc.AddMetrics(row, metrics, nil)
+	if !strings.HasPrefix(doc.ChartStatus, "Changed") {
+		t.Fatalf("changed guarded coverage was not detected: %s", doc.ChartStatus)
+	}
+}
