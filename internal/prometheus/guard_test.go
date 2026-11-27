@@ -311,6 +311,7 @@ func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
 
 func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 	cfg := config.Default("simple_limit")
+	cfg.ClassifyWorkloads = true
 	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
 	const points = 180
 	for _, verified := range []int{0, 1, 5} {
@@ -321,6 +322,10 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 				value = func(i int) float64 { return .6 * float64(i) }
 			case strings.HasPrefix(q, "container_memory_working_set_bytes"):
 				value = func(int) float64 { return 100 << 20 }
+			case strings.HasPrefix(q, "kube_pod_container_"):
+				return 200, matrixBody()
+			case strings.HasPrefix(q, "container_cpu_cfs_throttled_periods_total"):
+				value = func(i int) float64 { return float64(min(i, points-5)) }
 			case strings.HasPrefix(q, "container_cpu_cfs_periods_total"):
 				value = counter
 			case strings.HasPrefix(q, "container_spec_cpu_quota"):
@@ -350,6 +355,9 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 		result, err := strategy.Run(cfg, metrics, obj)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !slices.Contains(result.Analysis.Classifications[0].Features, analysis.FeatureCPUThrottled) {
+			t.Fatal("pre-resize throttling disappeared from the release classification")
 		}
 		cpu := result.Resources[model.CPU]
 		if cpu.Request.Value >= 1 || (cpu.Limit.Value < 2) != (verified == 5) {
@@ -394,5 +402,16 @@ func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 		if got.Resources[model.CPU].Limit.Set == bursts {
 			t.Fatalf("bursts=%t: %+v", bursts, got.Resources[model.CPU])
 		}
+	}
+}
+
+func TestCurrentCRIOCgroupfsSamples(t *testing.T) {
+	obj := guardObject()
+	obj.Pods[0].ContainerID = "cri-o://abc"
+	labels := `{"namespace":"demo","pod":"pod","container":"app","id":"/kubepods/burstable/podpod-uid/crio-abc"}`
+	client, _ := fakePrometheus(t, config.Default("simple"), respondAll(labels))
+	metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), time.Unix(guardStart+120, 0))
+	if len(metrics.CPU) != 1 || len(metrics.CPU[0].Samples) != 2 || len(metrics.Memory) != 1 || len(metrics.Memory[0].Samples) != 2 {
+		t.Fatalf("running CRI-O cgroupfs samples disappeared: %+v", metrics)
 	}
 }

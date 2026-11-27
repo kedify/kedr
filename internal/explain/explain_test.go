@@ -200,6 +200,7 @@ func TestVisualFixtures(t *testing.T) {
 func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
 	run, row, metrics := fixture(t)
 	row.Scan.Analysis.EffectivePolicy.CPU.LimitReductionGuard = &analysis.CPULimitReductionGuardPolicy{}
+	row.Digest = "normalized-v3:" + strings.TrimPrefix(row.Digest, runstore.MetricDigestPrefix)
 	doc := Build(run, row)
 	doc.AddMetrics(row, metrics, nil)
 	if !strings.HasPrefix(doc.ChartStatus, "Unverifiable") {
@@ -214,6 +215,12 @@ func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
 	if !strings.HasPrefix(doc.ChartStatus, "Verified") {
 		t.Fatalf("unchanged guarded digest was not verified: %s", doc.ChartStatus)
 	}
+	metrics.OOMCoverageIncomplete = true
+	doc.AddMetrics(row, metrics, nil)
+	if !strings.HasPrefix(doc.ChartStatus, "Changed") {
+		t.Fatalf("failed OOM collection verified as complete: %s", doc.ChartStatus)
+	}
+	metrics.OOMCoverageIncomplete = false
 	metrics.Throttling.SourceComplete = !metrics.Throttling.SourceComplete
 	doc.AddMetrics(row, metrics, nil)
 	if !strings.HasPrefix(doc.ChartStatus, "Changed") {

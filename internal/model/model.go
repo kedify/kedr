@@ -179,22 +179,26 @@ type Object struct {
 	Annotations     map[string]string                   `json:"annotations" yaml:"annotations"`
 	Releases        []Release                           `json:"releases,omitempty" yaml:"releases,omitempty"`
 
-	Selector             string             `json:"-" yaml:"-"`
-	UID                  string             `json:"-" yaml:"-"`
-	GroupedJobs          []string           `json:"-" yaml:"-"`
-	GroupingExpr         string             `json:"-" yaml:"-"`
-	Release              string             `json:"-" yaml:"-"`
-	ObservedAt           int64              `json:"-" yaml:"-"`
-	ReleaseStartedAt     int64              `json:"-" yaml:"-"`
-	ReleaseStartInferred bool               `json:"-" yaml:"-"`
-	IdentityAmbiguous    bool               `json:"-" yaml:"-"`
-	InventoryAvailable   bool               `json:"-" yaml:"-"`
-	ExcludedPods         int                `json:"-" yaml:"-"`
-	Generation           int64              `json:"-" yaml:"-"`
-	ObservedGeneration   int64              `json:"-" yaml:"-"`
-	TemplateHash         string             `json:"-" yaml:"-"`
-	Image                string             `json:"-" yaml:"-"`
-	OOMKills             []analysis.OOMKill `json:"-" yaml:"-"`
+	Selector                    string             `json:"-" yaml:"-"`
+	UID                         string             `json:"-" yaml:"-"`
+	GroupedJobs                 []string           `json:"-" yaml:"-"`
+	GroupingExpr                string             `json:"-" yaml:"-"`
+	Release                     string             `json:"-" yaml:"-"`
+	ObservedAt                  int64              `json:"-" yaml:"-"`
+	ReleaseStartedAt            int64              `json:"-" yaml:"-"`
+	RollbackIntervalStart       int64              `json:"-" yaml:"-"`
+	DeploymentCompletedAt       int64              `json:"-" yaml:"-"`
+	DeploymentCompletionMessage string             `json:"-" yaml:"-"`
+	RolloutBoundaryVerified     bool               `json:"-" yaml:"-"`
+	ReleaseStartInferred        bool               `json:"-" yaml:"-"`
+	IdentityAmbiguous           bool               `json:"-" yaml:"-"`
+	InventoryAvailable          bool               `json:"-" yaml:"-"`
+	ExcludedPods                int                `json:"-" yaml:"-"`
+	Generation                  int64              `json:"-" yaml:"-"`
+	ObservedGeneration          int64              `json:"-" yaml:"-"`
+	TemplateHash                string             `json:"-" yaml:"-"`
+	Image                       string             `json:"-" yaml:"-"`
+	OOMKills                    []analysis.OOMKill `json:"-" yaml:"-"`
 }
 
 func (o Object) CurrentPods() int {

@@ -146,3 +146,11 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 		t.Fatalf("legacy unguarded CPU cut must preserve independent memory increase: %+v", artifact)
 	}
 }
+
+func TestLegacyZeroLimitCannotAuthorizeFirstCap(t *testing.T) {
+	out := &analysis.Output{DetectorVersion: "9"}
+	result := analysis.ResourceAnalysis{Resource: analysis.ResourceCPU, Evidence: analysis.ResourceEvidence{CurrentLimit: analysis.Signal{Available: true, Value: 0}}, Recommendations: []analysis.Recommendation{{Setting: analysis.SettingLimits, CurrentValue: 0, SuggestedValue: 100}}}
+	if !lacksSavedGuards(out, result) {
+		t.Fatal("legacy zero limit accepted a first finite cap")
+	}
+}

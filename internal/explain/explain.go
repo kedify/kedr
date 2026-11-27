@@ -437,10 +437,7 @@ func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnin
 	d.Warnings = append(d.Warnings, warnings...)
 	digest, err := row.MetricsDigest(metrics)
 	d.ChartStatus = "Unverifiable: no compatible saved metric fingerprint."
-	compatible := strings.HasPrefix(row.Digest, "normalized-v1:") || strings.HasPrefix(row.Digest, "normalized-v2:")
-	if row.UsesCPULimitGuard() {
-		compatible = strings.HasPrefix(row.Digest, "normalized-v3:")
-	}
+	compatible := strings.HasPrefix(row.Digest, runstore.MetricDigestPrefix)
 	if err == nil && compatible && row.Scan.Analysis != nil && row.Scan.Analysis.DetectorVersion == analysis.ResourceRightSizeDetectorVersion {
 		if digest == row.Digest && len(warnings) == 0 {
 			d.ChartStatus = "Verified: retrieved observations match the saved metric fingerprint."

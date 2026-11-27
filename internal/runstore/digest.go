@@ -10,6 +10,8 @@ import (
 	"github.com/kedify/recommender/analysis"
 )
 
+const MetricDigestPrefix = "normalized-v4:"
+
 // MetricsDigest fingerprints normalized collected observations, with canonical
 // ordering. Samples exist only during hashing and are never saved in the run.
 func MetricsDigest(metrics strategy.Metrics) (string, error) {
@@ -30,6 +32,9 @@ func (r Row) MetricsDigest(metrics strategy.Metrics) (string, error) {
 func metricsDigest(metrics strategy.Metrics, cpuGuard bool) (string, error) {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
+	if err := enc.Encode([3]bool{cpuGuard, metrics.ClassifyWorkloads, metrics.OOMCoverageIncomplete}); err != nil {
+		return "", err
+	}
 	for _, series := range [][]analysis.Series{metrics.CPU, metrics.Memory} {
 		rows := append([]analysis.Series(nil), series...)
 		sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
@@ -53,11 +58,8 @@ func metricsDigest(metrics strategy.Metrics, cpuGuard bool) (string, error) {
 		return "", err
 	}
 
-	prefix := "normalized-v1:"
 	if metrics.ClassifyWorkloads || cpuGuard {
-		prefix = "normalized-v2:"
 		if cpuGuard {
-			prefix = "normalized-v3:"
 			if err := enc.Encode(metrics.Throttling.SourceComplete); err != nil {
 				return "", err
 			}
@@ -83,5 +85,5 @@ func metricsDigest(metrics strategy.Metrics, cpuGuard bool) (string, error) {
 			}
 		}
 	}
-	return prefix + hex.EncodeToString(h.Sum(nil)), nil
+	return MetricDigestPrefix + hex.EncodeToString(h.Sum(nil)), nil
 }

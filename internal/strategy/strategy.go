@@ -54,7 +54,7 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 	}
 	c := analysis.ContainerObservation{
 		Target:   target,
-		Identity: analysis.CurrentIdentity{Available: object.UID != "" && object.Release != "", WorkloadUID: object.UID, Release: object.Release, Timestamp: object.ObservedAt, ReleaseStartedAt: object.ReleaseStartedAt, ReleaseStartInferred: object.ReleaseStartInferred, RolloutBoundaryVerified: object.ReleaseStartedAt > 0, Ambiguous: object.IdentityAmbiguous},
+		Identity: analysis.CurrentIdentity{Available: object.UID != "" && object.Release != "", WorkloadUID: object.UID, Release: object.Release, Timestamp: object.ObservedAt, ReleaseStartedAt: object.ReleaseStartedAt, ReleaseStartInferred: object.ReleaseStartInferred, RolloutBoundaryVerified: object.RolloutBoundaryVerified, Ambiguous: object.IdentityAmbiguous},
 		// The analyzer independently compares each resource's fresh observed pods
 		// to this API inventory; metric availability is not assumed here.
 		Inventory: analysis.Inventory{Available: object.InventoryAvailable, Timestamp: object.ObservedAt, Eligible: eligible, CurrentPods: currentPods, Observed: eligible, Excluded: object.ExcludedPods},
@@ -70,7 +70,13 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 	}
 	c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
 	c.OOMCoverageIncomplete = metrics.OOMCoverageIncomplete || slices.ContainsFunc(c.OOMKills, func(kill analysis.OOMKill) bool {
-		return kill.WorkloadUID == target.WorkloadUID && kill.Release == target.Release && kill.Timestamp > metrics.EvaluationTime
+		if kill.WorkloadUID != target.WorkloadUID || kill.Release != target.Release {
+			return false
+		}
+		// In a reused ReplicaSet an OOM before completion may belong to either
+		// activation. Hold decreases without using an unproven failed limit.
+		return kill.Timestamp > metrics.EvaluationTime || (object.RollbackIntervalStart > 0 &&
+			kill.Timestamp >= max(metrics.WindowStart, object.RollbackIntervalStart) && kill.Timestamp < object.ReleaseStartedAt)
 	})
 	if cfg.ClassifyWorkloads {
 		observation := analysis.ClassificationObservation{}

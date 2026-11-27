@@ -384,6 +384,7 @@ func (l *Loader) fromStandalonePod(cluster *string, pod *corev1.Pod) []model.Obj
 		out[i].ObservedGeneration = pod.Generation
 		if !pod.CreationTimestamp.IsZero() {
 			out[i].ReleaseStartedAt = pod.CreationTimestamp.UnixMilli()
+			out[i].RolloutBoundaryVerified = true
 		}
 		out[i].Releases = []model.Release{{ID: out[i].Release, Name: pod.Name, Image: out[i].Image, CreatedAt: out[i].ReleaseStartedAt, Current: true}}
 	}
@@ -394,12 +395,13 @@ func (l *Loader) fromDeployment(c *string, x *appsv1.Deployment, h map[hpaKey]*m
 	out := l.objects(c, x.ObjectMeta, "Deployment", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
 	for i := range out {
 		out[i].ObservedGeneration = x.Status.ObservedGeneration
-		// Completion is a conservative activation boundary, including rollbacks
-		// that reuse an old ReplicaSet. Pod replacement does not move it forward.
+		if x.Generation == 0 || x.Generation != x.Status.ObservedGeneration {
+			continue
+		}
 		for _, condition := range x.Status.Conditions {
 			if condition.Type == appsv1.DeploymentProgressing && condition.Reason == "NewReplicaSetAvailable" && condition.Status == corev1.ConditionTrue && !condition.LastUpdateTime.IsZero() {
-				out[i].ReleaseStartedAt = condition.LastUpdateTime.UnixMilli()
-				out[i].ReleaseStartInferred = true
+				out[i].DeploymentCompletedAt = condition.LastUpdateTime.UnixMilli()
+				out[i].DeploymentCompletionMessage = condition.Message
 			}
 		}
 	}

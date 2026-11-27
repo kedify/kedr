@@ -356,7 +356,7 @@ func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[st
 }
 
 // Each CFS interval used as proof needs both endpoints at the limit under review.
-// Retain the contiguous suffix at that quota, including across in-place resizes.
+// Mark the contiguous suffix at that quota. Classification uses the full series.
 func atAppliedQuota(counters, quotas, periods []analysis.Series, limit float64) []analysis.Series {
 	if len(counters) != len(quotas) || len(counters) != len(periods) {
 		return nil
@@ -381,7 +381,8 @@ func atAppliedQuota(counters, quotas, periods []analysis.Series, limit float64) 
 		if first == len(counter.Samples) {
 			return nil
 		}
-		counters[i].Samples = counter.Samples[first:]
+		// Classification keeps the full lifetime. Only proof is bounded by quota.
+		counters[i].CPUGuardStart = counter.Samples[first].Timestamp
 	}
 	return counters
 }
@@ -398,12 +399,13 @@ func normalizeRuntimeID(id string) string {
 	}
 	id = strings.TrimRight(id, "/")
 	id = id[strings.LastIndexByte(id, '/')+1:]
-	if scope, ok := strings.CutSuffix(id, ".scope"); ok {
-		for _, prefix := range []string{"cri-containerd-", "crio-", "docker-"} {
-			if id, ok := strings.CutPrefix(scope, prefix); ok {
-				return id
-			}
+	leaf, scope := strings.CutSuffix(id, ".scope")
+	for _, prefix := range []string{"cri-containerd-", "crio-", "docker-"} {
+		if runtime, ok := strings.CutPrefix(leaf, prefix); ok {
+			return runtime
 		}
+	}
+	if scope {
 		return ""
 	}
 	return id

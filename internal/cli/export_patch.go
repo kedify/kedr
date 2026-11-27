@@ -90,7 +90,8 @@ func lacksSavedGuards(out *analysis.Output, result analysis.ResourceAnalysis) bo
 		return true
 	}
 	for _, rec := range result.Recommendations {
-		introducesCap := rec.Setting == analysis.SettingLimits && result.Evidence.CurrentLimit.Unset
+		introducesCap := rec.Setting == analysis.SettingLimits && result.Evidence.CurrentLimit.Available &&
+			(result.Evidence.CurrentLimit.Unset || result.Evidence.CurrentLimit.Value == 0)
 		if !introducesCap && rec.SuggestedValue >= rec.CurrentValue {
 			continue
 		}
