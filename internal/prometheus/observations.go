@@ -40,7 +40,7 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		isQuota := metric == "CPUQuota" || metric == "CPUPeriod"
 		if isQuota {
 			limit := object.Allocations.Limits[model.CPU]
-			if len(live) == 0 || !limit.Set || limit.Unknown {
+			if len(live) == 0 || !limit.Set || limit.Unknown || limit.Value <= 0 {
 				continue
 			}
 			scope.Pods = make([]model.Pod, 0, len(live))
@@ -106,7 +106,7 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		complete = complete && len(verified["CPUUsage"]) == len(live)
 		result.CPU = withCurrentRuntime(result.CPU, verified["CPUUsage"], object.Container, object.Release)
 		limit := object.Allocations.Limits[model.CPU]
-		if limit.Set && !limit.Unknown {
+		if limit.Set && !limit.Unknown && limit.Value > 0 {
 			quotaUnverified := false
 			for _, family := range cfsFamilies {
 				before := len(verified[family])

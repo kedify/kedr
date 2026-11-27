@@ -213,11 +213,13 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 		completionHours, killHours           int
 		lagging, ambiguous, incomplete       bool
 		prunedPredecessor, reusedPredecessor bool
+		retired                              bool
 		wantKills                            int
 	}{
 		{name: "new set fails before completing", completedSet: "app-a", completionHours: 2, killHours: 3, wantKills: 1},
 		{name: "new set with previous completion", completedSet: "app-b", completionHours: 6, killHours: 3, wantKills: 1},
-		{name: "rollback excludes kill before intervening set", history: "1", completedSet: "app-a", completionHours: 2, killHours: 7},
+		{name: "rollback retains safety veto for surviving Pod", history: "1", completedSet: "app-a", completionHours: 2, killHours: 7, incomplete: true},
+		{name: "rollback excludes retired Pod before intervening set", history: "1", completedSet: "app-a", completionHours: 2, killHours: 7, retired: true},
 		{name: "rollback kill during uncertain interval holds memory", history: "1", completedSet: "app-a", completionHours: 2, killHours: 3, incomplete: true},
 		{name: "rollback keeps new kill", history: "1", completedSet: "app-a", completionHours: 2, killHours: 1, wantKills: 1},
 		{name: "rollback previous set completed", history: "1", completedSet: "app-b", completionHours: 4, killHours: 3, ambiguous: true},
@@ -254,6 +256,16 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 			cfg.MinimumHistoryHours, cfg.PointsRequired = .5, 2
 			loader := NewLoader(cfg)
 			objects := []runtime.Object{a, pod}
+			usageUID := "p"
+			if tc.retired {
+				pod.Status.Phase = corev1.PodFailed
+				fresh := pod.DeepCopy()
+				fresh.Name, fresh.UID = "replacement", "replacement"
+				fresh.CreationTimestamp = at(tc.completionHours)
+				fresh.Status = corev1.PodStatus{Phase: corev1.PodRunning}
+				objects = append(objects, fresh)
+				usageUID = string(fresh.UID)
+			}
 			if !tc.prunedPredecessor {
 				b := set("b", "2", 5)
 				if tc.reusedPredecessor {
@@ -273,7 +285,7 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 				return
 			}
 			metrics := strategy.Metrics{WindowStart: at(12).UnixMilli(), EvaluationTime: object.ObservedAt}
-			memory := analysis.Series{ID: "p/main", PodUID: "p", WorkloadUID: object.UID, Release: object.Release, Kind: analysis.SampleGauge}
+			memory := analysis.Series{ID: usageUID + "/main", PodUID: usageUID, WorkloadUID: object.UID, Release: object.Release, Kind: analysis.SampleGauge}
 			for ts := max(object.ReleaseStartedAt, object.Pods[0].CreatedAt); ts <= metrics.EvaluationTime; ts += 60000 {
 				memory.Samples = append(memory.Samples, analysis.Sample{Timestamp: ts, Value: 100 << 20})
 			}

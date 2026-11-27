@@ -234,7 +234,8 @@ new ReplicaSet's creation time includes failures that occur before the rollout
 finishes. On rollback, KEDR checks that the current ReplicaSet's completion
 follows the first activation of the preceding revision. A missing or reused
 predecessor leaves the activation unverified and holds sizing. A kill in the
-uncertain interval before verified completion holds memory decreases. Reusing an
+uncertain interval before verified completion, or in a surviving Pod before the
+rollback, holds memory decreases. Reusing an
 image tag without changing the Pod template keeps the same release.
 
 StatefulSets and DaemonSets use controller revisions. KEDR can use a historical

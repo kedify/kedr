@@ -75,8 +75,10 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 		}
 		// In a reused ReplicaSet an OOM before completion may belong to either
 		// activation. Hold decreases without using an unproven failed limit.
+		_, survivingPod := currentPods[kill.PodUID]
 		return kill.Timestamp > metrics.EvaluationTime || (object.RollbackIntervalStart > 0 &&
-			kill.Timestamp >= max(metrics.WindowStart, object.RollbackIntervalStart) && kill.Timestamp < object.ReleaseStartedAt)
+			kill.Timestamp >= metrics.WindowStart && kill.Timestamp < object.ReleaseStartedAt &&
+			(survivingPod || kill.Timestamp >= object.RollbackIntervalStart))
 	})
 	if cfg.ClassifyWorkloads {
 		observation := analysis.ClassificationObservation{}

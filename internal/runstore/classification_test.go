@@ -48,9 +48,14 @@ func TestGuardedDigestIncludesCountersAndCoverage(t *testing.T) {
 	if err != nil || first == second {
 		t.Fatal("changed coverage did not change the guarded digest")
 	}
+	metrics.Throttling.Periods[0].CPUGuardStart = 1000
+	boundary, err := row.MetricsDigest(metrics)
+	if err != nil || boundary == second {
+		t.Fatal("changed quota proof start did not change the guarded digest")
+	}
 	metrics.Throttling.Periods[0].Samples[0].Value++
 	third, err := row.MetricsDigest(metrics)
-	if err != nil || second == third {
+	if err != nil || boundary == third {
 		t.Fatal("changed counters did not change the guarded digest")
 	}
 }

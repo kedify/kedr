@@ -404,13 +404,17 @@ func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 		obj.InventoryAvailable, obj.ObservedAt = true, end.UnixMilli()
 		obj.Allocations = model.EmptyAllocations()
 		obj.Allocations.Requests[model.CPU] = model.Number(.1)
+		if bursts {
+			obj.Allocations.Limits[model.CPU] = model.Number(0)
+		}
 		obj.Pods[0].Allocations = obj.Allocations
 		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
 		got, err := strategy.Run(cfg, metrics, obj)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Resources[model.CPU].Limit.Set == bursts {
+		limit := got.Resources[model.CPU].Limit
+		if (limit.Set && limit.Value > 0) == bursts {
 			t.Fatalf("bursts=%t: %+v", bursts, got.Resources[model.CPU])
 		}
 	}
