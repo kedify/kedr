@@ -209,10 +209,11 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 	at := func(hoursAgo int) metav1.Time { return metav1.NewTime(now.Add(-time.Duration(hoursAgo) * time.Hour)) }
 	const revision = "deployment.kubernetes.io/revision"
 	for _, tc := range []struct {
-		name, history, completedSet    string
-		completionHours, killHours     int
-		lagging, ambiguous, incomplete bool
-		wantKills                      int
+		name, history, completedSet          string
+		completionHours, killHours           int
+		lagging, ambiguous, incomplete       bool
+		prunedPredecessor, reusedPredecessor bool
+		wantKills                            int
 	}{
 		{name: "new set fails before completing", completedSet: "app-a", completionHours: 2, killHours: 3, wantKills: 1},
 		{name: "new set with previous completion", completedSet: "app-b", completionHours: 6, killHours: 3, wantKills: 1},
@@ -221,6 +222,8 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 		{name: "rollback keeps new kill", history: "1", completedSet: "app-a", completionHours: 2, killHours: 1, wantKills: 1},
 		{name: "rollback previous set completed", history: "1", completedSet: "app-b", completionHours: 4, killHours: 3, ambiguous: true},
 		{name: "rollback original completion predates intervening set", history: "1", completedSet: "app-a", completionHours: 8, killHours: 3, ambiguous: true},
+		{name: "rollback predecessor pruned", history: "1", completedSet: "app-a", completionHours: 8, killHours: 3, prunedPredecessor: true, ambiguous: true},
+		{name: "rollback predecessor previously reused", history: "1", completedSet: "app-a", completionHours: 8, killHours: 3, reusedPredecessor: true, ambiguous: true},
 		{name: "generation not yet observed", history: "1", completedSet: "app-a", completionHours: 2, killHours: 3, lagging: true, ambiguous: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,7 +253,16 @@ func TestDeploymentOOMAcrossRolloutAndRollback(t *testing.T) {
 			cfg := config.Default("simple_limit")
 			cfg.MinimumHistoryHours, cfg.PointsRequired = .5, 2
 			loader := NewLoader(cfg)
-			object, err := loader.Observe(context.Background(), Clients{Typed: fake.NewSimpleClientset(a, set("b", "2", 5), pod)}, loader.fromDeployment(nil, d, nil)[0])
+			objects := []runtime.Object{a, pod}
+			if !tc.prunedPredecessor {
+				b := set("b", "2", 5)
+				if tc.reusedPredecessor {
+					b.CreationTimestamp = at(12)
+					b.Annotations["deployment.kubernetes.io/revision-history"] = "1"
+				}
+				objects = append(objects, b)
+			}
+			object, err := loader.Observe(context.Background(), Clients{Typed: fake.NewSimpleClientset(objects...)}, loader.fromDeployment(nil, d, nil)[0])
 			if err != nil {
 				t.Fatal(err)
 			}

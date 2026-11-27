@@ -76,7 +76,10 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 		if object.Kind == "Rollout" {
 			label = "rollouts-pod-template-hash"
 		}
+		const revisionAnnotation = "deployment.kubernetes.io/revision"
+		currentRevision, _ := strconv.ParseInt(object.Annotations[revisionAnnotation], 10, 64)
 		var reusedSet string
+		var interveningStart int64
 		for _, set := range sets.Items {
 			owner := metav1.GetControllerOf(&set)
 			if owner == nil || owner.Name != object.Name || owner.Kind != object.Kind || string(owner.UID) != object.UID || set.UID == "" {
@@ -88,7 +91,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			}
 			release := label + ":" + hash
 			owners[string(set.UID)] = release
-			revision, _ := strconv.ParseInt(set.Annotations["deployment.kubernetes.io/revision"], 10, 64)
+			revision, _ := strconv.ParseInt(set.Annotations[revisionAnnotation], 10, 64)
 			info := model.Release{ID: release, Name: set.Name, OwnerUID: string(set.UID), Revision: revision}
 			if !set.CreationTimestamp.IsZero() {
 				info.CreatedAt = set.CreationTimestamp.UnixMilli()
@@ -99,13 +102,17 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 				}
 			}
 			object.Releases = append(object.Releases, info)
-			if object.Kind == "Deployment" && revision > 0 && set.Annotations["deployment.kubernetes.io/revision"] == object.Annotations["deployment.kubernetes.io/revision"] {
+			reused := set.Annotations["deployment.kubernetes.io/revision-history"] != ""
+			if currentRevision > 1 && revision == currentRevision-1 && !reused {
+				interveningStart = info.CreatedAt
+			}
+			if object.Kind == "Deployment" && revision > 0 && revision == currentRevision {
 				if object.Release != "" && object.Release != release {
 					object.IdentityAmbiguous = true
 				}
 				object.Release = release
 				if object.Generation > 0 && object.Generation == object.ObservedGeneration {
-					if set.Annotations["deployment.kubernetes.io/revision-history"] == "" {
+					if !reused {
 						// A new ReplicaSet may lose a Pod before the rollout completes.
 						object.ReleaseStartedAt = info.CreatedAt
 						object.RolloutBoundaryVerified = info.CreatedAt > 0
@@ -117,22 +124,16 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			}
 		}
 		if reusedSet != "" {
-			// Kubernetes names the completed ReplicaSet in this condition. An
-			// older completion for the same set may predate an intervening rollout.
+			// Only creation of the immediately preceding, never-reused revision
+			// proves when control passed away from this set. A pruned or reused
+			// predecessor cannot date an activation from its birth timestamp.
 			completed := object.DeploymentCompletedAt
-			currentCompletion := completed > 0 && object.DeploymentCompletionMessage == fmt.Sprintf("ReplicaSet %q has successfully progressed.", reusedSet)
-			earliest := int64(1) // Without a retained intervening set, activation time is unknown.
-			for _, release := range object.Releases {
-				if release.ID != object.Release {
-					earliest = max(earliest, release.CreatedAt)
-				}
-			}
-			currentCompletion = currentCompletion && earliest < completed
-			if currentCompletion {
+			if interveningStart > 0 && completed > interveningStart && object.DeploymentCompletionMessage == fmt.Sprintf("ReplicaSet %q has successfully progressed.", reusedSet) {
 				object.ReleaseStartedAt, object.ReleaseStartInferred, object.RolloutBoundaryVerified = completed, true, true
-				object.RollbackIntervalStart = earliest
+				object.RollbackIntervalStart = interveningStart
 			} else {
 				object.IdentityAmbiguous = true
+				object.Warnings = append(object.Warnings, "RollbackActivationUnverified")
 			}
 		}
 	case "CronJob":

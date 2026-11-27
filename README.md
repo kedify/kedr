@@ -229,21 +229,20 @@ of minute-level scrapes to qualify, including modest gaps within the 90% coverag
 guard. Pod uptime alone does not guarantee enough observed history or coverage.
 An explicit `--points-required 100` still requires 100 distinct observation times.
 
-Deployments use ReplicaSets as release boundaries, including image **and** other
-pod-template changes. Current rollout revision takes precedence over creation
-time (important for rollback); available rollout-completion time is used as a
-conservative start boundary. Images are included in release metadata for
-explanation, not used to merge different ReplicaSets. Reusing a mutable image tag
-without creating a new rollout is not automatically a new release.
+Deployments use the controller-owned ReplicaSet for the current revision. A
+new ReplicaSet's creation time includes failures that occur before the rollout
+finishes. On rollback, KEDR checks that the current ReplicaSet's completion
+follows the first activation of the preceding revision. A missing or reused
+predecessor leaves the activation unverified and holds sizing. A kill in the
+uncertain interval before verified completion holds memory decreases. Reusing an
+image tag without changing the Pod template keeps the same release.
 
-StatefulSets and DaemonSets use controller revisions. Historical
-`kube_pod_labels{label_controller_revision_hash="..."}` gives the precise revision
-when KSM exports that label. Otherwise, image metadata can associate a historical
-pod with a known revision **only if the image identifies one revision uniquely**;
-this fallback is disclosed as `HistoricalReleaseIdentityUsesImage`. Ambiguous or
-unmatched images are comparison-only cohorts, never relabeled as the current
-revision. Export the controller-revision-hash pod label to distinguish
-configuration-only rollouts reliably.
+StatefulSets and DaemonSets use controller revisions. KEDR can use a historical
+Pod for sizing when its UID, creation time, controller UID and revision are
+known. Export `kube_pod_labels{label_controller_revision_hash="..."}` with
+kube-state-metrics to supply that revision. When only an image is known, KEDR
+keeps the Pod in an image cohort for comparison and reports
+`HistoricalReleaseIdentityUsesImage`.
 
 KEDR retains its HPA guard, severity, and scoring. Unless `--allow-hpa` is set,
 HPA-managed resources display `?`. Raw analyzer output remains available for
