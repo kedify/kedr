@@ -235,7 +235,7 @@ func TestCFSCertificationRequiresCurrentContainerRuntime(t *testing.T) {
 			if tc.want {
 				rows := metrics.Throttling.Periods
 				if len(rows) != 2 || len(rows[0].Samples) != 3 || rows[0].Samples[0].Timestamp < object.Pods[0].ContainerStartedAt ||
-					!strings.Contains(rows[1].ID, "before.scope") {
+					rows[0].CPUGuardAdvisoryOnly || !rows[1].CPUGuardAdvisoryOnly || !strings.Contains(rows[1].ID, "before.scope") {
 					t.Fatalf("expected certified current samples followed by advisory previous runtime: %+v", rows)
 				}
 			}
@@ -243,38 +243,60 @@ func TestCFSCertificationRequiresCurrentContainerRuntime(t *testing.T) {
 	}
 }
 
-func TestSimpleLimitRecommendsLowerCapWithVerifiedCurrentRuntime(t *testing.T) {
-	cfg := config.Default("simple_limit")
-	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	const points = 180
-	client, _ := fakePrometheus(t, cfg, func(query string) (int, string) {
-		switch {
-		case strings.HasPrefix(query, "container_cpu_usage_seconds_total"):
-			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(i int) float64 { return .6 * float64(i) }))
-		case strings.HasPrefix(query, "container_memory_working_set_bytes"):
-			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(int) float64 { return 100 << 20 }))
-		case strings.HasPrefix(query, "container_cpu_cfs_periods_total"):
-			return 200, matrixBody(matrixRow(labeledSeries, 60, points, counter))
-		default:
-			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(int) float64 { return 0 }))
-		}
-	})
-	end := time.Unix(guardStart+60*points, 0)
-	object := guardObject()
-	object.ObservedAt, object.InventoryAvailable = end.UnixMilli(), true
-	object.Allocations.Requests = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(1), model.Memory: model.Number(512 << 20)}
-	object.Allocations.Limits = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(2), model.Memory: model.Number(512 << 20)}
-	object.Pods[0].Allocations = object.Allocations
-	metrics, _ := client.GatherWindow(context.Background(), object, time.Unix(guardStart, 0), end)
-	result, err := strategy.Run(cfg, metrics, object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	limit := result.Resources[model.CPU].Limit
-	if !metrics.Throttling.SourceComplete || result.Analysis.EffectivePolicy.Classification != nil || !limit.Set || limit.Value >= 2 {
-		t.Fatalf("complete current-runtime evidence should lower the cap: limit=%+v analysis=%+v", limit, result.Analysis.Results)
+func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
+	const previous = "{\"namespace\":\"demo\",\"pod\":\"pod\",\"container\":\"app\",\"uid\":\"pod-uid\",\"id\":\"/kubepods/pod-pod-uid/cri-containerd-before.scope\"}"
+	for _, tc := range []struct {
+		name     string
+		pressure bool
+	}{
+		{name: "clean restart allows reduction"},
+		{name: "current pressure holds despite clean history", pressure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default("simple_limit")
+			cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			const points = 180
+			client, _ := fakePrometheus(t, cfg, func(query string) (int, string) {
+				oldValue, currentValue := func(int) float64 { return 0 }, func(int) float64 { return 0 }
+				switch {
+				case strings.HasPrefix(query, "container_cpu_usage_seconds_total"):
+					currentValue = func(i int) float64 { return .6 * float64(i) }
+					oldValue = currentValue
+				case strings.HasPrefix(query, "container_memory_working_set_bytes"):
+					return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(int) float64 { return 100 << 20 }))
+				case strings.HasPrefix(query, "container_cpu_cfs_periods_total"):
+					oldValue, currentValue = counter, counter
+				case tc.pressure && strings.HasPrefix(query, "container_cpu_cfs_throttled_periods_total"):
+					currentValue = counter
+				}
+				return 200, matrixBody(matrixRow(labeledSeries, 60, points, currentValue), matrixRow(previous, 60, points-4, oldValue))
+			})
+			end := time.Unix(guardStart+60*points, 0)
+			object := guardObject()
+			object.ObservedAt, object.InventoryAvailable = end.UnixMilli(), true
+			object.Pods[0].ContainerStartedAt = end.Add(-3 * time.Minute).UnixMilli()
+			object.Allocations.Requests = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(1), model.Memory: model.Number(512 << 20)}
+			object.Allocations.Limits = map[model.ResourceType]model.MaybeValue{model.CPU: model.Number(2), model.Memory: model.Number(512 << 20)}
+			object.Pods[0].Allocations = object.Allocations
+			metrics, _ := client.GatherWindow(context.Background(), object, time.Unix(guardStart, 0), end)
+			result, err := strategy.Run(cfg, metrics, object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			limit := result.Resources[model.CPU].Limit
+			if !metrics.Throttling.SourceComplete || result.Analysis.EffectivePolicy.Classification != nil ||
+				(limit.Set && limit.Value < 2) == tc.pressure {
+				t.Fatalf("unexpected guarded cap: limit=%+v expected pressure=%t analysis=%+v", limit, tc.pressure, result.Analysis.Results)
+			}
+			heldUnderPressure := slices.ContainsFunc(result.Analysis.Results, func(r analysis.ResourceAnalysis) bool {
+				return r.Resource == analysis.ResourceCPU && slices.Contains(r.Notices, analysis.ReasonCPUThrottlingPressure)
+			})
+			if heldUnderPressure != tc.pressure {
+				t.Fatalf("throttling outcome=%t want %t", heldUnderPressure, tc.pressure)
+			}
+		})
 	}
 }

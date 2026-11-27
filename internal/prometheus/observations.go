@@ -84,10 +84,11 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 	for _, family := range cfsFamilies {
 		complete = complete && len(verified[family]) == len(live)
 	}
-	if complete {
-		result.Throttling.Seconds = withCurrentCounters(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Container, object.Release)
-		result.Throttling.ThrottledPeriods = withCurrentCounters(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Container, object.Release)
-		result.Throttling.Periods = withCurrentCounters(result.Throttling.Periods, verified["CPUPeriods"], object.Container, object.Release)
+	if complete && c.cfg.Strategy == "simple_limit" {
+		result.CPU = withCurrentRuntime(result.CPU, verified["CPUUsage"], object.Container, object.Release)
+		result.Throttling.Seconds = withCurrentRuntime(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Container, object.Release)
+		result.Throttling.ThrottledPeriods = withCurrentRuntime(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Container, object.Release)
+		result.Throttling.Periods = withCurrentRuntime(result.Throttling.Periods, verified["CPUPeriods"], object.Container, object.Release)
 	}
 	result.Throttling.SourceComplete = complete
 	return result, warnings
@@ -338,7 +339,7 @@ func normalizeRuntimeID(id string) string {
 	return id
 }
 
-func withCurrentCounters(history, current []analysis.Series, container, release string) []analysis.Series {
+func withCurrentRuntime(history, current []analysis.Series, container, release string) []analysis.Series {
 	lifetime := func(series analysis.Series) string {
 		return normalizeRuntimeID(strings.TrimPrefix(series.ID, series.PodUID+"/"+container+"/"))
 	}
@@ -348,6 +349,7 @@ func withCurrentCounters(history, current []analysis.Series, container, release 
 	}
 	for _, series := range history {
 		if id, found := active[series.PodUID]; !found || series.Release != release || lifetime(series) != id {
+			series.CPUGuardAdvisoryOnly = series.Release == release
 			current = append(current, series)
 		}
 	}
