@@ -184,11 +184,11 @@ func TestUnknownOOMLimitWithoutUsageIsNoAction(t *testing.T) {
 				}
 			}
 		}
-		if text := d.Text(true); text == "" || strings.Contains(text, "(fallback)") {
+		if text := d.Text(true); text == "" || strings.Contains(text, "(fallback)") || strings.Contains(text, "fallback sizing applies") {
 			t.Fatalf("%s: markdown missing or used a fallback: %s", stage, text)
 		}
 		page, err := HTML(d)
-		if err != nil || !strings.Contains(string(page), "Recorded OOMKilled events") || !strings.Contains(string(page), `"kind":"oom"`) {
+		if err != nil || !strings.Contains(string(page), "Recorded OOMKilled events") || !strings.Contains(string(page), `"kind":"oom"`) || strings.Contains(string(page), "fallback sizing applies") {
 			t.Fatalf("%s: missing HTML event: %v", stage, err)
 		}
 	}

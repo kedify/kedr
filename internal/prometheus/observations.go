@@ -33,8 +33,8 @@ func (c *Client) Gather(ctx context.Context, object model.Object) (strategy.Metr
 func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, end time.Time) (strategy.Metrics, []string) {
 	result := strategy.Metrics{ClassifyWorkloads: c.cfg.ClassifyWorkloads, WindowStart: start.UnixMilli(), EvaluationTime: end.UnixMilli()}
 	var warnings []string
-	// CFS families whose source passed the conservative completeness audit.
-	certified := make(map[string]bool, len(cfsFamilies))
+	live := livePodsByName(object)
+	verified := make(map[string][]analysis.Series, len(cfsFamilies))
 	for _, metric := range MetricsForStrategy(c.cfg) {
 		rows, err := c.loadMetric(ctx, metric, object, start, end)
 		if err != nil {
@@ -71,27 +71,23 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		case "CPUPeriods":
 			result.Throttling.Periods = data
 		}
-		if slices.Contains(cfsFamilies, metric) {
-			certified[metric] = audit.certifies(data, object.Release)
+		if len(live) > 0 && (slices.Contains(cfsFamilies, metric) || metric == "CPUUsage" && c.cfg.Strategy == "simple_limit") {
+			verified[metric] = currentRuntimeSeries(rows, object, live, kind)
 		}
 	}
-	// Failed or unqueried families leave certified[family] false. The shared
-	// engine still verifies per-pod coverage against the inventory.
-	// Certification is scoped to the exact present, nondeleted current-release
-	// Pods, so a recently deleted Pod of the same rollout cannot stand in for a
-	// live one by matching counts. Uncertified data is passed unchanged.
-	live := livePodUIDs(object)
+	// Keep earlier rollouts for the guard's segment boundary. If current
+	// coverage is proved, only current-runtime rows can represent this release.
 	complete := len(live) > 0
+	if c.cfg.Strategy == "simple_limit" {
+		complete = complete && len(verified["CPUUsage"]) == len(live)
+	}
 	for _, family := range cfsFamilies {
-		complete = complete && certified[family]
+		complete = complete && len(verified[family]) == len(live)
 	}
 	if complete {
-		seconds, okS := scopeToLivePods(result.Throttling.Seconds, live)
-		throttled, okT := scopeToLivePods(result.Throttling.ThrottledPeriods, live)
-		periods, okP := scopeToLivePods(result.Throttling.Periods, live)
-		if complete = okS && okT && okP; complete {
-			result.Throttling.Seconds, result.Throttling.ThrottledPeriods, result.Throttling.Periods = seconds, throttled, periods
-		}
+		result.Throttling.Seconds = withCurrentCounters(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Release)
+		result.Throttling.ThrottledPeriods = withCurrentCounters(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Release)
+		result.Throttling.Periods = withCurrentCounters(result.Throttling.Periods, verified["CPUPeriods"], object.Release)
 	}
 	result.Throttling.SourceComplete = complete
 	return result, warnings
@@ -260,55 +256,95 @@ type usageAudit struct {
 	ambiguous  bool // a row without a pod UID matched several pods of that name
 }
 
-// certifies reports whether a CFS family may claim complete source coverage:
-// only real scraped runtime IDs for the current release, with nothing dropped.
-func (a usageAudit) certifies(data []analysis.Series, release string) bool {
-	if a.excluded || a.inferredID || a.duplicate || a.ambiguous || release == "" {
-		return false
-	}
-	for _, row := range data {
-		if row.Release == release {
-			return true
-		}
-	}
-	return false
-}
-
-// livePodUIDs returns the UIDs of present, nondeleted Pods of the current
-// release, or nil when any of them is unattributable or repeated.
-func livePodUIDs(object model.Object) map[string]bool {
+// livePodsByName scopes certification to currently running containers with a
+// known runtime and start. An unidentifiable or repeated Pod leaves coverage unknown.
+func livePodsByName(object model.Object) map[string]model.Pod {
+	live := make(map[string]model.Pod)
+	uids := make(map[string]bool)
 	if object.Release == "" {
 		return nil
 	}
-	live := map[string]bool{}
 	for _, pod := range object.Pods {
 		if pod.Deleted || pod.EndedAt != 0 || pod.Release != object.Release {
 			continue
 		}
-		if pod.UID == "" || live[pod.UID] {
+		if pod.Name == "" || pod.UID == "" || uids[pod.UID] ||
+			pod.ContainerID == "" || pod.ContainerStartedAt <= 0 || live[pod.Name].UID != "" {
 			return nil
 		}
-		live[pod.UID] = true
+		live[pod.Name] = pod
+		uids[pod.UID] = true
 	}
 	return live
 }
 
-// scopeToLivePods keeps only rows of live Pods and reports whether every live
-// Pod has exactly one row, so certified coverage is tied to those Pods alone.
-func scopeToLivePods(rows []analysis.Series, live map[string]bool) ([]analysis.Series, bool) {
-	var out []analysis.Series
-	seen := make(map[string]bool, len(live))
+func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[string]model.Pod, kind analysis.SampleKind) []analysis.Series {
+	selected := make([]sampledSeries, 0, len(live))
+	seen := make(map[string]bool)
 	for _, row := range rows {
-		if !live[row.PodUID] {
+		pod, found := live[row.labels["pod"]]
+		if !found || row.labels["namespace"] != object.Namespace || row.labels["container"] != object.Container ||
+			(row.labels["uid"] != "" && row.labels["uid"] != pod.UID) {
 			continue
 		}
-		if seen[row.PodUID] {
-			return nil, false
+		id := row.labels["id"]
+		if id == "" {
+			id = row.labels["container_id"]
 		}
-		seen[row.PodUID] = true
-		out = append(out, row)
+		_, runningID, ok := strings.Cut(pod.ContainerID, "://")
+		if !ok || runningID == "" || normalizeRuntimeID(id) != runningID {
+			continue
+		}
+		if seen[pod.UID] {
+			return nil
+		}
+		var samples []analysis.Sample
+		for _, sample := range row.samples {
+			if sample.Timestamp >= max(pod.CreatedAt, pod.ContainerStartedAt) {
+				samples = append(samples, sample)
+			}
+		}
+		if len(samples) > 0 {
+			seen[pod.UID] = true
+			// Match counter families even if their exporters spell the same
+			// runtime identifier differently.
+			selected = append(selected, sampledSeries{
+				labels:  map[string]string{"pod": pod.Name, "uid": pod.UID, "namespace": object.Namespace, "id": runningID},
+				samples: samples,
+			})
+		}
 	}
-	return out, len(seen) == len(live)
+	data, audit := convertUsageAudited(selected, object, kind)
+	if audit.excluded || audit.inferredID || audit.duplicate || audit.ambiguous {
+		return nil
+	}
+	return data
+}
+
+func normalizeRuntimeID(id string) string {
+	if _, suffix, ok := strings.Cut(id, "://"); ok {
+		return suffix
+	}
+	id = strings.TrimRight(id, "/")
+	id = id[strings.LastIndexByte(id, '/')+1:]
+	if scope, ok := strings.CutSuffix(id, ".scope"); ok {
+		for _, prefix := range []string{"cri-containerd-", "crio-", "docker-"} {
+			if id, ok := strings.CutPrefix(scope, prefix); ok {
+				return id
+			}
+		}
+		return ""
+	}
+	return id
+}
+
+func withCurrentCounters(history, current []analysis.Series, release string) []analysis.Series {
+	for _, series := range history {
+		if series.Release != release {
+			current = append(current, series)
+		}
+	}
+	return current
 }
 
 // convertUsageAudited is convertUsage plus the provenance needed to decide

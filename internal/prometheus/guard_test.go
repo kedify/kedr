@@ -20,7 +20,7 @@ import (
 const guardStart = 1700000000
 
 const (
-	labeledSeries   = `{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"lifetime"}`
+	labeledSeries   = `{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope"}`
 	unlabeledSeries = `{"namespace":"demo","pod":"pod","container":"app"}`
 )
 
@@ -129,8 +129,8 @@ func TestCFSSourceCompleteIsConservative(t *testing.T) {
 		{"verified runtime IDs", verified, true},
 		{"pod status ID fallback", respondAll(unlabeledSeries), false},
 		{"duplicate scrape", respondAll(
-			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"lifetime","job":"kubelet"}`,
-			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"lifetime","job":"cadvisor"}`), false},
+			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"kubelet"}`,
+			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"cadvisor"}`), false},
 		{"missing CFS series", func(q string) (int, string) {
 			if strings.Contains(q, "cfs") {
 				return 200, matrixBody()
@@ -200,5 +200,44 @@ func TestSimpleLimitWithoutCFSEvidenceKeepsCPULimit(t *testing.T) {
 		return r.Resource == analysis.ResourceCPU && slices.Contains(r.Notices, analysis.ReasonCPULimitEvidenceIncomplete)
 	}) {
 		t.Fatalf("engine did not hold a CPU limit for incomplete evidence: %+v", result.Analysis.Results)
+	}
+}
+
+func TestCFSCertificationRequiresCurrentContainerRuntime(t *testing.T) {
+	const oldSeries = `{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-before.scope"}`
+	for _, tc := range []struct {
+		name, usage, counters string
+		withOld               bool
+		want                  bool
+	}{
+		{name: "old and current", usage: labeledSeries, counters: labeledSeries, withOld: true, want: true},
+		{name: "old counters only", usage: labeledSeries, counters: oldSeries},
+		{name: "old CPU usage only", usage: oldSeries, counters: labeledSeries},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := guardObject()
+			object.Pods[0].ContainerStartedAt = (guardStart + 150) * 1000
+			client, _ := fakePrometheus(t, config.Default("simple_limit"), func(query string) (int, string) {
+				label := tc.usage
+				if strings.Contains(query, "cfs") {
+					label = tc.counters
+				}
+				values := []string{matrixRow(label, 60, 5, counter)}
+				if tc.withOld {
+					values = append(values, matrixRow(oldSeries, 60, 2, counter))
+				}
+				return 200, matrixBody(values...)
+			})
+			metrics, _ := client.GatherWindow(context.Background(), object, time.Unix(guardStart, 0), time.Unix(guardStart+300, 0))
+			if metrics.Throttling.SourceComplete != tc.want {
+				t.Fatalf("coverage = %v, want %v", metrics.Throttling.SourceComplete, tc.want)
+			}
+			if tc.want {
+				rows := metrics.Throttling.Periods
+				if len(rows) != 1 || len(rows[0].Samples) != 3 || rows[0].Samples[0].Timestamp < object.Pods[0].ContainerStartedAt {
+					t.Fatalf("certification selected previous runtime samples: %+v", rows)
+				}
+			}
+		})
 	}
 }

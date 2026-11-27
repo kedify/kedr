@@ -370,7 +370,7 @@ func reasonText(r analysis.Reason) string {
 		analysis.ReasonIncompleteInventory:   "Freshly observed pods do not cover the eligible inventory; reductions are blocked.",
 		analysis.ReasonExcludedContainers:    "Some containers were excluded; reductions are blocked.",
 		analysis.ReasonOOMKillDetected:       "OOM kills were observed in the selected evidence window.",
-		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit; fallback sizing applies and reductions are blocked.",
+		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit. Memory reductions are blocked.",
 		analysis.ReasonPreviousReleaseUsage:  "An earlier rollout supplies the sizing usage.",
 	}
 	if text, ok := messages[r]; ok {

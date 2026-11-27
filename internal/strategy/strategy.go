@@ -42,7 +42,7 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 	target := analysis.Target{Namespace: object.Namespace, Kind: object.Kind, Name: object.Name, Container: object.Container, WorkloadUID: object.UID, Release: object.Release}
 	eligible := 0
 	for _, pod := range object.Pods {
-		if !pod.Deleted && pod.Release == object.Release {
+		if !pod.Deleted && pod.EndedAt == 0 && pod.Release == object.Release {
 			eligible++
 		}
 	}
