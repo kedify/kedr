@@ -220,3 +220,11 @@ func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
 		t.Fatalf("changed guarded coverage was not detected: %s", doc.ChartStatus)
 	}
 }
+
+func TestTraceQuantitiesKeepTheirOwnUnits(t *testing.T) {
+	for key, want := range map[string]string{"freshnessSeconds": "300 s", "throttledSeconds": "300 s", "minimumPositiveIntervals": "300", "eligiblePods": "300", "candidate": "300 mCPU", "sourceComplete": "true"} {
+		if got := traceValue(model.CPU, key, 300); got != want {
+			t.Errorf("%s: got %s, want %s", key, got, want)
+		}
+	}
+}

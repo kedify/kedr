@@ -77,7 +77,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 		}
 		for _, set := range sets.Items {
 			owner := metav1.GetControllerOf(&set)
-			if owner == nil || owner.Name != object.Name || owner.Kind != object.Kind {
+			if owner == nil || owner.Name != object.Name || owner.Kind != object.Kind || string(owner.UID) != object.UID || set.UID == "" {
 				continue
 			}
 			hash := set.Spec.Template.Labels[label]
@@ -87,7 +87,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			release := label + ":" + hash
 			owners[string(set.UID)] = release
 			revision, _ := strconv.ParseInt(set.Annotations["deployment.kubernetes.io/revision"], 10, 64)
-			info := model.Release{ID: release, Name: set.Name, Revision: revision}
+			info := model.Release{ID: release, Name: set.Name, OwnerUID: string(set.UID), Revision: revision}
 			if !set.CreationTimestamp.IsZero() {
 				info.CreatedAt = set.CreationTimestamp.UnixMilli()
 			}
@@ -174,6 +174,10 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 				continue
 			}
 			recordContainerFailure(&failure, status)
+			if status.Resources != nil {
+				// During an in-place resize desired and applied allocations can differ.
+				p.Allocations = allocations(corev1.Container{Resources: *status.Resources})
+			}
 			p.ContainerID = status.ContainerID
 			if status.State.Running != nil && !status.State.Running.StartedAt.IsZero() {
 				p.ContainerStartedAt = status.State.Running.StartedAt.UnixMilli()
@@ -208,7 +212,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			var latest model.Release
 			for _, revision := range revisions.Items {
 				owner := metav1.GetControllerOf(&revision)
-				if owner == nil || owner.Kind != object.Kind || owner.Name != object.Name {
+				if owner == nil || owner.Kind != object.Kind || owner.Name != object.Name || string(owner.UID) != object.UID {
 					continue
 				}
 				hash := revision.Name

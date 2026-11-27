@@ -25,7 +25,7 @@ The reason should be `OOMKilled`. To see the event in KEDR, run a scan while the
 kedr simple --namespace kedr-oom-kill-demo --use-oomkill-data --full --explain
 ```
 
-The `OOMKilled` column shows the latest event. The default OOM memory buffer may recommend a higher request, but KEDR does not apply resource changes.
+The `OOMKilled` column shows the latest event. Pod status identifies the event but omits the failed memory limit. KEDR retains the event and holds memory decreases.
 
 Remove the demo when finished:
 
@@ -35,4 +35,4 @@ kubectl delete namespace kedr-oom-kill-demo
 
 ## Classification
 
-Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `oom-killed` after an observed termination; this flag alone does not enable OOM sizing adjustments. A kill alone does not imply `memory-leak`.
+Add `--classify-workloads` to the scan command to include advisory feature tags. Expect `oom-killed` after an observed termination; verified OOMs are also considered during sizing. A kill alone does not imply `memory-leak`.

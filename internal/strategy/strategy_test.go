@@ -180,12 +180,12 @@ func TestSharedGuardsAndNoActionMapping(t *testing.T) {
 	}
 }
 
-func TestInputUnitsSettingsAndOOMOptIn(t *testing.T) {
+func TestInputUnitsSettingsAndKnownOOM(t *testing.T) {
 	cfg, metrics, object := fixture(4)
 	kill := analysis.OOMKill{ID: "kill", PodUID: "pod-uid", WorkloadUID: object.UID, Release: object.Release, Timestamp: metrics.EvaluationTime, MemoryLimitBytes: 512 * testMiB}
 	object.OOMKills = []analysis.OOMKill{kill}
 	in := Input(cfg, metrics, object)
-	if in.Containers[0].CPU.CurrentRequest.Value != 1000 || in.Containers[0].Memory.CurrentRequest.Value != 512*testMiB || len(in.Containers[0].OOMKills) != 0 {
+	if in.Containers[0].CPU.CurrentRequest.Value != 1000 || in.Containers[0].Memory.CurrentRequest.Value != 512*testMiB || len(in.Containers[0].OOMKills) != 1 {
 		t.Fatalf("wrong input conversion: %+v", in.Containers[0])
 	}
 	cfg.UseOOMKillData = true
@@ -195,6 +195,7 @@ func TestInputUnitsSettingsAndOOMOptIn(t *testing.T) {
 	}
 	// An unknown termination-time limit is never replaced by the later current
 	// limit: the event is retained, sizes nothing, and blocks the reduction.
+	cfg.UseOOMKillData = false // Live status protects bare simple as well.
 	object.OOMKills[0].MemoryLimitBytes = 0
 	result = run(t, cfg, metrics, object)
 	memory := result.Analysis.Results[0]
@@ -395,5 +396,19 @@ func TestCollectionOutageDoesNotHideRecommendations(t *testing.T) {
 		if result.DataQuality.Coverage < .99 || result.DataQuality.Coverage >= 1 {
 			t.Fatalf("missing measurements should still reduce coverage: %+v", result.DataQuality)
 		}
+	}
+}
+
+func TestRetiredPodDoesNotCoverCurrentReplacement(t *testing.T) {
+	cfg, metrics, obj := fixture(4)
+	old := obj.Pods[0]
+	old.Deleted, old.EndedAt = true, metrics.EvaluationTime-30000
+	live := obj.Pods[0]
+	live.Name, live.UID, live.CreatedAt = "replacement", "replacement", metrics.EvaluationTime-90000
+	obj.Pods = []model.Pod{old, live}
+	metrics.Memory[0].Samples = metrics.Memory[0].Samples[:len(metrics.Memory[0].Samples)-1]
+	memory := run(t, cfg, metrics, obj).Analysis.Results[0]
+	if len(memory.Recommendations) != 0 || memory.Evidence.Inventory.Observed != 0 {
+		t.Fatalf("retired samples counted as current coverage: %+v", memory.Evidence.Inventory)
 	}
 }

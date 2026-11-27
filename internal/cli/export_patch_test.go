@@ -49,9 +49,16 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	}
 	unheld := row
 	unheld.Scan.SuppressedResources = nil
+	legacy := unheld
+	legacyOut := *analysisOutput
+	legacyOut.Results = append([]analysis.ResourceAnalysis(nil), legacyOut.Results...)
+	legacyCPU := &legacyOut.Results[0]
+	legacyCPU.Evidence.CurrentLimit = analysis.Signal{Available: true, Value: 2000}
+	legacyCPU.Recommendations = []analysis.Recommendation{{Setting: analysis.SettingLimits, CurrentValue: 2000, SuggestedValue: 1000}}
+	legacy.Scan.Analysis = &legacyOut
 	unsupported := row
 	unsupported.Scan.Object.Kind = "StatefulSet"
-	_, err := store.Save(runstore.Run{Rows: []runstore.Row{row, unheld, unsupported}})
+	_, err := store.Save(runstore.Run{Rows: []runstore.Row{row, unheld, unsupported, legacy}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +86,14 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &fields); err != nil {
 		t.Fatal(err)
 	}
-	if string(fields["checks"]) != "[]" || fields["checkedAt"] != nil {
+	if len(result.Checks) != 4 || fields["checkedAt"] != nil {
 		t.Fatalf("offline export returned checks %s and checkedAt %s", fields["checks"], fields["checkedAt"])
+	}
+
+	for _, check := range result.Checks {
+		if check.Status != reviewpatch.Unperformed {
+			t.Fatalf("offline check reported as %s: %v", check.Status, check)
+		}
 	}
 
 	stdout.Reset()
@@ -115,5 +128,21 @@ func TestExportPatchOOMWithHeldCPU(t *testing.T) {
 	cmd.SetErr(&stdout)
 	if err := cmd.Execute(); err == nil || err.Error() != "row 3 is a StatefulSet. Patch export requires a Deployment" {
 		t.Fatalf("unsupported workload error = %v", err)
+	}
+
+	stdout.Reset()
+	cmd = newExportPatchCommand(func() (runstore.Store, error) { return store, nil })
+	cmd.SetArgs([]string{"4"})
+	cmd.SetOut(&stdout)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	result = reviewpatch.Review{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	artifact = result.Document.Artifact
+	if len(artifact.Holds) != 1 || artifact.Holds[0].Resource != analysis.ResourceCPU || len(artifact.Changes) != 1 || artifact.Changes[0].Resource != analysis.ResourceMemory {
+		t.Fatalf("legacy unguarded CPU cut must preserve independent memory increase: %+v", artifact)
 	}
 }

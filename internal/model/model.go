@@ -93,8 +93,9 @@ type Pod struct {
 }
 
 // Release describes a ReplicaSet or controller revision, newest first in reports.
-// Workload ownership is scoped by cluster, namespace, kind and name, not UID.
+// OwnerUID anchors historical Pod ownership to the verified intermediate controller.
 type Release struct {
+	OwnerUID  string `json:"-" yaml:"-"`
 	ID        string `json:"id" yaml:"id"`
 	Name      string `json:"name" yaml:"name"`
 	Image     string `json:"image,omitempty" yaml:"image,omitempty"`

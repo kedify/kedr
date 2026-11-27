@@ -35,6 +35,8 @@ func TestObserveStandalonePod(t *testing.T) {
 	object := loader.fromStandalonePod(nil, pod)[0]
 	// Observe must use the current pod allocation, not an earlier discovery value.
 	pod.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = resource.MustParse("50m")
+	// The kubelet has applied only 25m during this in-place resize.
+	pod.Status.ContainerStatuses[0].Resources = &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m")}}
 	neighbor := pod.DeepCopy()
 	neighbor.Name, neighbor.UID = "unrelated", "other-uid"
 	client := fake.NewSimpleClientset(pod, neighbor)
@@ -49,7 +51,7 @@ func TestObserveStandalonePod(t *testing.T) {
 	if observed.Name != pod.Name || observed.UID != got.UID || observed.Release != got.Release || observed.ContainerID != "containerd://current" || observed.ContainerStartedAt != now.Add(-30*time.Minute).UnixMilli() {
 		t.Fatalf("pod/container lifetimes not preserved: %+v", observed)
 	}
-	if got.Allocations.Requests[model.CPU].Value != .05 || observed.Allocations.Requests[model.CPU] != got.Allocations.Requests[model.CPU] || len(got.Releases) != 1 || !got.Releases[0].Current {
+	if got.Allocations.Requests[model.CPU].Value != .05 || observed.Allocations.Requests[model.CPU].Value != .025 || len(got.Releases) != 1 || !got.Releases[0].Current {
 		t.Fatalf("current allocations or release metadata lost: %+v", got)
 	}
 	if len(got.OOMKills) != 1 || got.OOMKills[0].PodUID != got.UID || got.OOMKills[0].WorkloadUID != got.UID || got.OOMKills[0].Release != got.Release {
@@ -92,9 +94,6 @@ func TestObserveChecksOwnerNameAndSelectsCurrentRelease(t *testing.T) {
 	now := time.Unix(1800000000, 0)
 	makeSet := func(name, uid, workloadUID, revision, hash string) *appsv1.ReplicaSet {
 		ownerName := "app"
-		if workloadUID == "other-workload" {
-			ownerName = "other-app"
-		}
 		return &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", UID: types.UID(uid), OwnerReferences: controller("Deployment", ownerName, workloadUID), Annotations: map[string]string{"deployment.kubernetes.io/revision": revision}}, Spec: appsv1.ReplicaSetSpec{Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"pod-template-hash": hash}}}}}
 	}
 	makePod := func(name, setUID string) *corev1.Pod {

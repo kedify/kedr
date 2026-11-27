@@ -81,12 +81,12 @@ func TestSimpleLimitQueriesCFSIndependentOfClassifier(t *testing.T) {
 		t.Fatalf("simple query set changed: %v", got)
 	}
 	cfg := config.Default("simple_limit")
-	want := []string{"CPUUsage", "MemoryUsage", "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods"}
+	want := []string{"CPUUsage", "MemoryUsage", "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods", "CPUQuota", "CPUPeriod"}
 	if got := MetricsForStrategy(cfg); !slices.Equal(got, want) {
 		t.Fatalf("simple_limit without classifier: got %v, want %v", got, want)
 	}
 	cfg.ClassifyWorkloads = true
-	if got := MetricsForStrategy(cfg); len(got) != 6 || !slices.Contains(got, "OOMKilledTimestamp") {
+	if got := MetricsForStrategy(cfg); len(got) != 8 || !slices.Contains(got, "OOMKilledTimestamp") {
 		t.Fatalf("classifier should add only OOM data: %v", got)
 	}
 	object := guardObject()
@@ -128,9 +128,13 @@ func TestCFSSourceCompleteIsConservative(t *testing.T) {
 	}{
 		{"verified runtime IDs", verified, true},
 		{"pod status ID fallback", respondAll(unlabeledSeries), false},
-		{"duplicate scrape", respondAll(
+		{"identical scrape mirrors", respondAll(
 			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"kubelet"}`,
-			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"cadvisor"}`), false},
+			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"cadvisor"}`), true},
+		{"conflicting mirrors", func(q string) (int, string) {
+			other := strings.TrimSuffix(labeledSeries, "}") + `,"job":"mirror"}`
+			return 200, matrixBody(matrixRow(labeledSeries, 60, 2, counter), matrixRow(other, 60, 2, func(int) float64 { return 10 }))
+		}, false},
 		{"missing CFS series", func(q string) (int, string) {
 			if strings.Contains(q, "cfs") {
 				return 200, matrixBody()
@@ -262,6 +266,10 @@ func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
 			client, _ := fakePrometheus(t, cfg, func(query string) (int, string) {
 				oldValue, currentValue := func(int) float64 { return 0 }, func(int) float64 { return 0 }
 				switch {
+				case strings.HasPrefix(query, "container_spec_cpu_quota"):
+					currentValue = func(int) float64 { return 200000 }
+				case strings.HasPrefix(query, "container_spec_cpu_period"):
+					currentValue = func(int) float64 { return 100000 }
 				case strings.HasPrefix(query, "container_cpu_usage_seconds_total"):
 					currentValue = func(i int) float64 { return .6 * float64(i) }
 					oldValue = currentValue
@@ -298,5 +306,93 @@ func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
 				t.Fatalf("throttling outcome=%t want %t", heldUnderPressure, tc.pressure)
 			}
 		})
+	}
+}
+
+func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
+	cfg := config.Default("simple_limit")
+	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+	const points = 180
+	for _, verified := range []int{0, 1, 5} {
+		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
+			value := func(int) float64 { return 0 }
+			switch {
+			case strings.HasPrefix(q, "container_cpu_usage_seconds_total"):
+				value = func(i int) float64 { return .6 * float64(i) }
+			case strings.HasPrefix(q, "container_memory_working_set_bytes"):
+				value = func(int) float64 { return 100 << 20 }
+			case strings.HasPrefix(q, "container_cpu_cfs_periods_total"):
+				value = counter
+			case strings.HasPrefix(q, "container_spec_cpu_quota"):
+				value = func(i int) float64 {
+					if i == 1 {
+						return -1
+					} // The first scrape had no quota.
+					if i <= points-verified {
+						return 400000
+					}
+					return 200000
+				}
+			case strings.HasPrefix(q, "container_spec_cpu_period"):
+				value = func(int) float64 { return 100000 }
+			}
+			// Exact duplicate scrapes are equivalent to a single sample stream.
+			other := strings.TrimSuffix(labeledSeries, "}") + `,"job":"mirror"}`
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, value), matrixRow(other, 60, points, value))
+		})
+		end := time.Unix(guardStart+60*points, 0)
+		obj := guardObject()
+		obj.ObservedAt, obj.InventoryAvailable = end.UnixMilli(), true
+		obj.Allocations = model.EmptyAllocations()
+		obj.Allocations.Requests[model.CPU], obj.Allocations.Limits[model.CPU] = model.Number(1), model.Number(2)
+		obj.Pods[0].Allocations = obj.Allocations
+		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
+		result, err := strategy.Run(cfg, metrics, obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cpu := result.Resources[model.CPU]
+		if cpu.Request.Value >= 1 || (cpu.Limit.Value < 2) != (verified == 5) {
+			t.Fatalf("%d matching samples produced %+v", verified, cpu)
+		}
+	}
+}
+
+func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
+	const points = 180
+	for _, bursts := range []bool{false, true} {
+		cfg := config.Default("simple_limit")
+		cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
+			if strings.HasPrefix(q, "container_spec_cpu_") {
+				t.Error("uncapped container unnecessarily queried for quota")
+			}
+			if !strings.HasPrefix(q, "container_cpu_usage_seconds_total") {
+				return 200, matrixBody()
+			}
+			var total float64
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(i int) float64 {
+				rate := .020
+				if bursts && (i == 10 || i == 30 || i == 50) {
+					rate = .800
+				}
+				total += 60 * rate
+				return total
+			}))
+		})
+		end := time.Unix(guardStart+60*points, 0)
+		obj := guardObject()
+		obj.InventoryAvailable, obj.ObservedAt = true, end.UnixMilli()
+		obj.Allocations = model.EmptyAllocations()
+		obj.Allocations.Requests[model.CPU] = model.Number(.1)
+		obj.Pods[0].Allocations = obj.Allocations
+		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
+		got, err := strategy.Run(cfg, metrics, obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Resources[model.CPU].Limit.Set == bursts {
+			t.Fatalf("bursts=%t: %+v", bursts, got.Resources[model.CPU])
+		}
 	}
 }

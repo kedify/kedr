@@ -23,8 +23,8 @@ func TestClassificationDoesNotChangeSizingAndIncludesOOM(t *testing.T) {
 			if !slices.Contains(after.Analysis.Classifications[0].Features, analysis.FeatureOOMKilled) {
 				t.Fatal("flag alone did not collect OOM tag")
 			}
-			if after.Analysis.Results[0].MemoryLeak != nil || after.Analysis.Results[0].OOMAdjustment != nil {
-				t.Fatal("classification enabled sizing flags")
+			if after.Analysis.Results[0].MemoryLeak != nil || after.Analysis.Results[0].OOMAdjustment == nil {
+				t.Fatal("known OOM or independently controlled leak evidence lost")
 			}
 			cfg.UseOOMKillData = true
 			cfg.DetectMemoryLeaks = true

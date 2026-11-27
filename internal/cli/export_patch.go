@@ -57,16 +57,53 @@ func newExportPatchCommand(openStore func() (runstore.Store, error)) *cobra.Comm
 			for resource, reason := range row.Scan.SuppressedResources {
 				holds[analysis.Resource(resource)] = reason
 			}
+			requiresRescan := false
+			if out := row.Scan.Analysis; out != nil {
+				for _, result := range out.Results {
+					if holds[result.Resource] == "" && lacksSavedGuards(out, result) {
+						requiresRescan = true
+						holds[result.Resource] = "Saved analysis lacks current safety checks for this change. Run a new scan."
+					}
+				}
+			}
 			doc, err := reviewpatch.Build(*cluster, "", target, row.EvaluationTime, row.Scan.Analysis, holds)
+			if err != nil && requiresRescan {
+				return fmt.Errorf("%w. Run a new scan to check changes held by the saved safety policy", err)
+			}
 			if err != nil {
 				return err
 			}
 			encoder := json.NewEncoder(cmd.OutOrStdout())
 			encoder.SetIndent("", "  ")
-			return encoder.Encode(reviewpatch.Review{Document: doc, Checks: []reviewpatch.Check{}})
+			return encoder.Encode(reviewpatch.Review{Document: doc, Checks: reviewpatch.UnperformedChecks()})
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "Saved run ID (defaults to the latest run)")
 	cmd.Flags().StringVar(&clusterID, "cluster-id", "", "Registered cluster ID for the artifact (defaults to the saved scope)")
 	return cmd
+}
+
+// A saved run may predate current membership and safety checks. Keep independent
+// increases exportable, but require a new scan for changes that relied on them.
+func lacksSavedGuards(out *analysis.Output, result analysis.ResourceAnalysis) bool {
+	if adj := result.OOMAdjustment; adj != nil && (adj.UsedCurrentFallback || adj.UsedUsageFallback) {
+		return true
+	}
+	for _, rec := range result.Recommendations {
+		introducesCap := rec.Setting == analysis.SettingLimits && result.Evidence.CurrentLimit.Unset
+		if !introducesCap && rec.SuggestedValue >= rec.CurrentValue {
+			continue
+		}
+		if out.DetectorVersion != analysis.ResourceRightSizeDetectorVersion {
+			return true
+		}
+		if result.Resource == analysis.ResourceMemory {
+			return !out.EffectivePolicy.Memory.SafetyGuards
+		}
+		if rec.Setting == analysis.SettingLimits {
+			guard := out.EffectivePolicy.CPU.LimitReductionGuard
+			return guard == nil || !guard.RequireCompleteCoverage
+		}
+	}
+	return false
 }

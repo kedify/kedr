@@ -280,7 +280,7 @@ func TestOOMChunksRetainObservationsAfterPodEnded(t *testing.T) {
 
 func TestNativeSamplesPreserveScrapesOffQueryGrid(t *testing.T) {
 	rows := []series{{Metric: map[string]string{"pod": "p"}, Values: []samplePair{{60.125, 1}, {120.125, 2}, {180.125, 3}, {240.125, 4}}}}
-	samples, err := nativeSamples(rows)
+	samples, err := nativeSamples(rows, "CPUUsage")
 	if err != nil || len(samples[0].samples) != 4 || samples[0].samples[1].Timestamp != 120125 {
 		t.Fatalf("native scrapes lost: %+v, %v", samples, err)
 	}

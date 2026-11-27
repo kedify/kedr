@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -120,6 +121,23 @@ func quantity(r model.ResourceType, v model.MaybeValue) string {
 	}
 	return resource.FormatMemory(v.Value)
 }
+func traceValue(r model.ResourceType, key string, value float64) string {
+	switch key {
+	case "sourceComplete", "inventoryValid":
+		return strconv.FormatBool(value != 0)
+	case "coefficient", "ratio":
+		return fmt.Sprintf("%g×", value)
+	case "relativeChange", "minimumRelativeChange":
+		return fmt.Sprintf("%.3g%%", value*100)
+	case "freshnessSeconds", "throttledSeconds", "spanThrottledSeconds":
+		return fmt.Sprintf("%g s", value)
+	case "usage", "candidate", "required", "recurringDemand", "request", "currentLimit", "retainedRequest", "current", "before", "baseline", "floor", "minimum", "maximum", "minimumAbsoluteChange", "absoluteChange":
+		return native(r, value)
+	default:
+		return fmt.Sprintf("%g", value)
+	}
+}
+
 func native(r model.ResourceType, v float64) string {
 	if r == model.CPU {
 		return fmt.Sprintf("%.6g mCPU", v)
@@ -218,13 +236,7 @@ func Build(run runstore.Run, row runstore.Row) Document {
 						sort.Strings(keys)
 						parts := make([]string, 0, len(keys))
 						for _, key := range keys {
-							value := native(r, s.Values[key])
-							if key == "coefficient" || key == "ratio" {
-								value = fmt.Sprintf("%g×", s.Values[key])
-							}
-							if key == "relativeChange" || key == "minimumRelativeChange" {
-								value = fmt.Sprintf("%.3g%%", s.Values[key]*100)
-							}
+							value := traceValue(r, key, s.Values[key])
 							parts = append(parts, fmt.Sprintf("%s: %s", humanLabel(key), value))
 						}
 						step.Detail = strings.Join(parts, " · ")

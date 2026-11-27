@@ -36,12 +36,29 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 	live := livePodsByName(object)
 	verified := make(map[string][]analysis.Series, len(cfsFamilies))
 	for _, metric := range MetricsForStrategy(c.cfg) {
-		rows, err := c.loadMetric(ctx, metric, object, start, end)
+		scope := object
+		isQuota := metric == "CPUQuota" || metric == "CPUPeriod"
+		if isQuota {
+			limit := object.Allocations.Limits[model.CPU]
+			if len(live) == 0 || !limit.Set || limit.Unknown {
+				continue
+			}
+			scope.Pods = make([]model.Pod, 0, len(live))
+			for _, pod := range object.Pods {
+				if current, ok := live[pod.Name]; ok && current.UID == pod.UID {
+					scope.Pods = append(scope.Pods, pod)
+				}
+			}
+		}
+		rows, err := c.loadMetric(ctx, metric, scope, start, end)
 		if err != nil {
 			if c.logger != nil {
 				c.logger.Warnf("failed to gather %s for %s/%s: %v", metric, object.Namespace, object.Name, err)
 			}
 			warnings = append(warnings, metric+"CollectionFailed")
+			if metric == "OOMKilledTimestamp" {
+				result.OOMCoverageIncomplete = true
+			}
 			continue
 		}
 		if metric == "OOMKilledTimestamp" {
@@ -51,6 +68,10 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		kind := analysis.SampleGauge
 		if metric == "CPUUsage" {
 			kind = analysis.SampleCPUCounterSeconds
+		}
+		if isQuota {
+			verified[metric] = currentRuntimeSeries(rows, object, live, kind)
+			continue
 		}
 		data, audit := convertUsageAudited(rows, object, kind)
 		if audit.excluded {
@@ -80,12 +101,18 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 	complete := len(live) > 0
 	if c.cfg.Strategy == "simple_limit" {
 		complete = complete && len(verified["CPUUsage"]) == len(live)
+		result.CPU = withCurrentRuntime(result.CPU, verified["CPUUsage"], object.Container, object.Release)
+		limit := object.Allocations.Limits[model.CPU]
+		if limit.Set && !limit.Unknown {
+			for _, family := range cfsFamilies {
+				verified[family] = atAppliedQuota(verified[family], verified["CPUQuota"], verified["CPUPeriod"], limit.Value)
+			}
+		}
 	}
 	for _, family := range cfsFamilies {
 		complete = complete && len(verified[family]) == len(live)
 	}
 	if complete && c.cfg.Strategy == "simple_limit" {
-		result.CPU = withCurrentRuntime(result.CPU, verified["CPUUsage"], object.Container, object.Release)
 		result.Throttling.Seconds = withCurrentRuntime(result.Throttling.Seconds, verified["CPUThrottledSeconds"], object.Container, object.Release)
 		result.Throttling.ThrottledPeriods = withCurrentRuntime(result.Throttling.ThrottledPeriods, verified["CPUThrottledPeriods"], object.Container, object.Release)
 		result.Throttling.Periods = withCurrentRuntime(result.Throttling.Periods, verified["CPUPeriods"], object.Container, object.Release)
@@ -151,7 +178,7 @@ func (c *Client) loadMetric(ctx context.Context, metric string, object model.Obj
 					// drop nor duplicate their shared boundary sample.
 					values, err = c.QuerySamples(groupCtx, query, chunkStart, chunkEnd)
 					if err == nil {
-						samples, err = nativeSamples(values)
+						samples, err = nativeSamples(values, metric)
 					}
 				}
 				if err != nil {
@@ -198,12 +225,12 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-func nativeSamples(rows []series) ([]sampledSeries, error) {
+func nativeSamples(rows []series, metric string) ([]sampledSeries, error) {
 	out := make([]sampledSeries, 0, len(rows))
 	for _, row := range rows {
 		result := sampledSeries{labels: row.Metric, samples: make([]analysis.Sample, 0, len(row.Values))}
 		for _, p := range row.Values {
-			if math.IsNaN(p.Time) || math.IsInf(p.Time, 0) || p.Time <= 0 || p.Time >= float64(math.MaxInt64)/1000 || math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 {
+			if math.IsNaN(p.Time) || math.IsInf(p.Time, 0) || p.Time <= 0 || p.Time >= float64(math.MaxInt64)/1000 || math.IsNaN(p.Value) || math.IsInf(p.Value, 0) || p.Value < 0 && !(metric == "CPUQuota" && p.Value == -1) {
 				return nil, errors.New("invalid native usage sample")
 			}
 			result.samples = append(result.samples, analysis.Sample{Timestamp: int64(math.Round(p.Time * 1000)), Value: p.Value})
@@ -281,7 +308,7 @@ func livePodsByName(object model.Object) map[string]model.Pod {
 
 func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[string]model.Pod, kind analysis.SampleKind) []analysis.Series {
 	selected := make([]sampledSeries, 0, len(live))
-	seen := make(map[string]bool)
+	seen := make(map[string][]analysis.Sample)
 	for _, row := range rows {
 		pod, found := live[row.labels["pod"]]
 		if !found || row.labels["namespace"] != object.Namespace || row.labels["container"] != object.Container ||
@@ -296,9 +323,6 @@ func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[st
 		if !ok || runningID == "" || normalizeRuntimeID(id) != runningID {
 			continue
 		}
-		if seen[pod.UID] {
-			return nil
-		}
 		var samples []analysis.Sample
 		for _, sample := range row.samples {
 			if sample.Timestamp >= max(pod.CreatedAt, pod.ContainerStartedAt) {
@@ -306,7 +330,13 @@ func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[st
 			}
 		}
 		if len(samples) > 0 {
-			seen[pod.UID] = true
+			if previous, found := seen[pod.UID]; found {
+				if !slices.Equal(samples, previous) {
+					return nil
+				}
+				continue
+			}
+			seen[pod.UID] = samples
 			// Match counter families even if their exporters spell the same
 			// runtime identifier differently.
 			selected = append(selected, sampledSeries{
@@ -320,6 +350,37 @@ func currentRuntimeSeries(rows []sampledSeries, object model.Object, live map[st
 		return nil
 	}
 	return data
+}
+
+// Each CFS interval used as proof needs both endpoints at the limit under review.
+// Retain the contiguous suffix at that quota, including across in-place resizes.
+func atAppliedQuota(counters, quotas, periods []analysis.Series, limit float64) []analysis.Series {
+	if len(counters) != len(quotas) || len(counters) != len(periods) {
+		return nil
+	}
+	for i, counter := range counters {
+		quota, period := quotas[i], periods[i]
+		if counter.ID != quota.ID || counter.ID != period.ID {
+			return nil
+		}
+		q, p := len(quota.Samples)-1, len(period.Samples)-1
+		first := len(counter.Samples)
+		for first > 0 && q >= 0 && p >= 0 {
+			ts := counter.Samples[first-1].Timestamp
+			if quota.Samples[q].Timestamp != ts || period.Samples[p].Timestamp != ts || period.Samples[p].Value <= 0 ||
+				math.Abs(quota.Samples[q].Value/period.Samples[p].Value-limit) > 1e-9 {
+				break
+			}
+			first--
+			q--
+			p--
+		}
+		if first == len(counter.Samples) {
+			return nil
+		}
+		counters[i].Samples = counter.Samples[first:]
+	}
+	return counters
 }
 
 func normalizeRuntimeID(id string) string {
