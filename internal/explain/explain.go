@@ -370,7 +370,7 @@ func reasonText(r analysis.Reason) string {
 		analysis.ReasonIncompleteInventory:   "Freshly observed pods do not cover the eligible inventory; reductions are blocked.",
 		analysis.ReasonExcludedContainers:    "Some containers were excluded; reductions are blocked.",
 		analysis.ReasonOOMKillDetected:       "OOM kills were observed in the selected evidence window.",
-		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit; fallback sizing applies and reductions are blocked.",
+		analysis.ReasonOOMLimitUnknown:       "An OOM event has no known event-time memory limit. Memory reductions are blocked.",
 		analysis.ReasonPreviousReleaseUsage:  "An earlier rollout supplies the sizing usage.",
 	}
 	if text, ok := messages[r]; ok {
@@ -423,9 +423,13 @@ func (d Document) Text(detailed bool) string {
 func (d *Document) AddMetrics(row runstore.Row, metrics strategy.Metrics, warnings []string) {
 	d.RetrievedAt = time.Now().UTC().Format(time.RFC3339)
 	d.Warnings = append(d.Warnings, warnings...)
-	digest, err := runstore.MetricsDigest(metrics)
+	digest, err := row.MetricsDigest(metrics)
 	d.ChartStatus = "Unverifiable: no compatible saved metric fingerprint."
-	if err == nil && row.Digest != "" && (strings.HasPrefix(row.Digest, "normalized-v1:") || strings.HasPrefix(row.Digest, "normalized-v2:")) && row.Scan.Analysis != nil && row.Scan.Analysis.DetectorVersion == analysis.ResourceRightSizeDetectorVersion {
+	compatible := strings.HasPrefix(row.Digest, "normalized-v1:") || strings.HasPrefix(row.Digest, "normalized-v2:")
+	if row.UsesCPULimitGuard() {
+		compatible = strings.HasPrefix(row.Digest, "normalized-v3:")
+	}
+	if err == nil && compatible && row.Scan.Analysis != nil && row.Scan.Analysis.DetectorVersion == analysis.ResourceRightSizeDetectorVersion {
 		if digest == row.Digest && len(warnings) == 0 {
 			d.ChartStatus = "Verified: retrieved observations match the saved metric fingerprint."
 		} else {

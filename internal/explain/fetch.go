@@ -17,6 +17,11 @@ import (
 // Fetch never observes today's workload. Kubernetes is used only to obtain the
 // saved context's transport/credentials, never to replace historical identity.
 func Fetch(ctx context.Context, row runstore.Row, cfg *config.Config) (strategy.Metrics, []string, error) {
+	if row.UsesCPULimitGuard() {
+		saved := *cfg
+		saved.Strategy = "simple_limit"
+		cfg = &saved
+	}
 	endpoint := row.Connection.Endpoint
 	if cfg.PrometheusURL != nil {
 		endpoint = *cfg.PrometheusURL

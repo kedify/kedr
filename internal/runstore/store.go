@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"time"
 
@@ -97,18 +98,26 @@ func NewRow(scan model.Scan, metrics strategy.Metrics, conn Connection) Row {
 	// Arbitrary annotations and labels are not required for explanations and may
 	// contain credentials. Do not include them in local snapshots.
 	row.Scan.Object.Labels, row.Scan.Object.Annotations = nil, nil
-	for _, pod := range scan.Object.Pods {
+	// Report sorting must not reorder the saved Pods independently of their identities.
+	row.Scan.Object.Pods = slices.Clone(scan.Object.Pods)
+	for _, pod := range row.Scan.Object.Pods {
 		row.Identity.Pods = append(row.Identity.Pods, Pod{Name: pod.Name, UID: pod.UID, Release: pod.Release, CreatedAt: pod.CreatedAt, EndedAt: pod.EndedAt, ContainerStartedAt: pod.ContainerStartedAt, ContainerID: pod.ContainerID})
 	}
-	row.Digest, _ = MetricsDigest(metrics)
+	row.Digest, _ = row.MetricsDigest(metrics)
 	return row
 }
 func (r Row) Object() model.Object {
 	o := r.Scan.Object
 	o.UID, o.Release = r.Identity.UID, r.Identity.Release
+	savedPods := o.Pods
 	o.Pods = make([]model.Pod, len(r.Identity.Pods))
 	for i, pod := range r.Identity.Pods {
 		o.Pods[i] = model.Pod{Name: pod.Name, UID: pod.UID, Release: pod.Release, CreatedAt: pod.CreatedAt, EndedAt: pod.EndedAt, ContainerStartedAt: pod.ContainerStartedAt, ContainerID: pod.ContainerID}
+		// NewRow records both views in the same order. The report view already
+		// preserves deletion and the hidden identity distinguishes reused names.
+		if i < len(savedPods) && savedPods[i].Name == pod.Name {
+			o.Pods[i].Deleted = savedPods[i].Deleted
+		}
 	}
 	return o
 }

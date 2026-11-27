@@ -63,12 +63,22 @@ func TestSharedAnalyzerParity(t *testing.T) {
 		if actual.Resources[model.CPU].Request.Value != .2 {
 			t.Fatalf("CPU counter conversion: %+v", actual.Resources[model.CPU])
 		}
-		wantLimit := 2.0
-		if name == "simple_limit" {
-			wantLimit = 1
-		}
-		if actual.Resources[model.CPU].Limit.Value != wantLimit {
+		// The fixture has no CFS throttling counters. Absent counters cannot prove
+		// a lower CPU limit safe, so simple_limit retains the current 2-core limit
+		// (simple never changes it).
+		if limit := actual.Resources[model.CPU].Limit; limit.Unknown || limit.Value != 2 {
 			t.Fatalf("CPU limit=%+v", actual.Resources[model.CPU])
+		}
+		if name == "simple_limit" {
+			cpu := actual.Analysis.Results[1]
+			for _, rec := range cpu.Recommendations {
+				if rec.Setting == analysis.SettingLimits {
+					t.Fatalf("CPU limit reduced without throttling evidence: %+v", cpu)
+				}
+			}
+			if cpu.DecisionTrace == nil || cpu.DecisionTrace.Settings[1].Disposition != "retained" {
+				t.Fatalf("CPU limit hold missing from trace: %+v", cpu.DecisionTrace)
+			}
 		}
 		if actual.Resources[model.Memory].Request.Value != 128*testMiB*1.15 {
 			t.Fatalf("memory=%+v", actual.Resources[model.Memory])
@@ -183,10 +193,13 @@ func TestInputUnitsSettingsAndOOMOptIn(t *testing.T) {
 	if result.Resources[model.Memory].Request.Value != 768*testMiB || !strings.Contains(*result.Resources[model.Memory].Info, "oom-kill-detected") {
 		t.Fatalf("OOM did not reach analyzer/report: %+v", result)
 	}
-	// Unknown termination-time limits use current settings as an explicit fallback.
+	// An unknown termination-time limit is never replaced by the later current
+	// limit: the event is retained, sizes nothing, and blocks the reduction.
 	object.OOMKills[0].MemoryLimitBytes = 0
-	if result = run(t, cfg, metrics, object); result.Resources[model.Memory].Request.Value != 1536*testMiB {
-		t.Fatal("unknown failed limit must bump the current limit")
+	result = run(t, cfg, metrics, object)
+	memory := result.Analysis.Results[0]
+	if result.Resources[model.Memory].Request.Value != 512*testMiB || result.Resources[model.Memory].Limit.Value != 1024*testMiB || memory.OOMAdjustment != nil || len(memory.Recommendations) != 0 || memory.NoActionReason != analysis.ReasonOOMLimitUnknown || len(memory.Evidence.OOMKills) != 1 || !strings.Contains(*result.Resources[model.Memory].Info, "oom-kill-detected") {
+		t.Fatalf("unknown failed limit must retain current memory settings without a fallback floor: %+v", result)
 	}
 	// Known absence is distinct from zero; inconsistent settings are unavailable.
 	object.Allocations.Limits[model.CPU] = model.Unset()

@@ -302,6 +302,9 @@ func (c *Config) AnalysisPolicy() (analysis.Policy, error) {
 	if c.Strategy == "simple_limit" {
 		p.CPU.Percentile = c.CPURequest
 		p.CPU.LimitsToRequestsRatio = c.CPULimitRatio
+		// Never lower a CPU limit unless raw CFS evidence covers every eligible
+		// current pod. This is independent of --classify-workloads.
+		p.CPU.LimitReductionGuard = &analysis.CPULimitReductionGuardPolicy{RequireCompleteCoverage: true}
 	}
 	if p.CPU.Percentile == 100 {
 		p.CPU.Strategy = analysis.CPUStrategyMax
@@ -311,6 +314,10 @@ func (c *Config) AnalysisPolicy() (analysis.Policy, error) {
 	p.Memory.HeadroomCoefficient = 1 + c.MemoryBufferPercent/100
 	p.Memory.OOMKilledCoefficient = 1 + c.OOMMemoryBuffer/100
 	p.Memory.LimitsToRequestsRatio = 1
+	// Mature memory safety is always on for live analysis. It consumes only the
+	// inputs the user already enabled (for example --use-oomkill-data) and is
+	// distinct from the advisory --detect-memory-leaks display below.
+	p.Memory.SafetyGuards = true
 	p.Evidence.MinimumSamples = c.PointsRequired
 	p.Evidence.MinimumHistorySeconds = int64(c.MinimumHistoryHours * 3600)
 	if c.ClassifyWorkloads {

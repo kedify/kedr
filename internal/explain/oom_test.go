@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +19,15 @@ import (
 
 func oomFixture(t *testing.T) (runstore.Run, runstore.Row, strategy.Metrics) {
 	t.Helper()
+	run, row, metrics, _ := oomFixtureResult(t, false)
+	return run, row, metrics
+}
+
+// oomFixtureResult assembles an OOM-only strategy fixture. The current-rollout
+// event carries an explicit synthetic 50 MiB termination-time limit only when
+// anchored; otherwise its limit is unknown, as KEDR's live sources report it.
+func oomFixtureResult(t *testing.T, anchored bool) (runstore.Run, runstore.Row, strategy.Metrics, strategy.Result) {
+	t.Helper()
 	run, row, metrics := fixture(t)
 	object := row.Scan.Object
 	object.Allocations.Requests[model.CPU], object.Allocations.Limits[model.CPU] = model.Unset(), model.Unset()
@@ -28,6 +38,10 @@ func oomFixture(t *testing.T) (runstore.Run, runstore.Row, strategy.Metrics) {
 	object.OOMKills = []analysis.OOMKill{
 		{ID: "current-oom", PodUID: "pod", WorkloadUID: object.UID, Release: object.Release, Timestamp: metrics.EvaluationTime - 300000},
 		{ID: "old-oom", PodUID: "old-pod", WorkloadUID: object.UID, Release: "v1", Timestamp: metrics.WindowStart + 60000},
+	}
+	if anchored {
+		// Explicit synthetic event-time limit, used only for positive OOM sizing.
+		object.OOMKills[0].MemoryLimitBytes = 50 * 1024 * 1024
 	}
 	metrics.CPU, metrics.Memory, metrics.OOMKills = nil, nil, nil
 	cfg := config.Default("simple")
@@ -47,11 +61,11 @@ func oomFixture(t *testing.T) (runstore.Run, runstore.Row, strategy.Metrics) {
 		t.Fatal(err)
 	}
 	run.Rows = []runstore.Row{row}
-	return run, row, metrics
+	return run, row, metrics, result
 }
 
 func TestOOMExplanationWithoutUsage(t *testing.T) {
-	run, row, metrics := oomFixture(t)
+	run, row, metrics, _ := oomFixtureResult(t, true)
 	before, err := json.Marshal(row)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +94,7 @@ func TestOOMExplanationWithoutUsage(t *testing.T) {
 		for _, event := range memory.Events {
 			if event.Kind == "oom" {
 				oomEvents++
-				if event.Time != metrics.EvaluationTime-300000 || !strings.Contains(event.Label, "checkout-abc") || !strings.Contains(event.Label, "limit at termination unknown") {
+				if event.Time != metrics.EvaluationTime-300000 || !strings.Contains(event.Label, "checkout-abc") || !strings.Contains(event.Label, "limit at termination 50 MiB") {
 					t.Fatalf("saved OOM identity/time changed: %+v", event)
 				}
 			}
@@ -98,7 +112,7 @@ func TestOOMExplanationWithoutUsage(t *testing.T) {
 		}
 		for _, index := range []int{2, 3} {
 			card := d.Cards[index]
-			if card.Recommended != "100Mi" || !strings.Contains(card.Steps[0].Detail, "50 MiB current memory setting (fallback) × 1.5 = 75 MiB") || strings.Contains(card.Source, "series") {
+			if card.Recommended != "100Mi" || !strings.Contains(card.Steps[0].Detail, "50 MiB limit at termination × 1.5 = 75 MiB") || strings.Contains(card.Source, "series") {
 				t.Fatalf("incomplete OOM calculation: %+v", card)
 			}
 		}
@@ -116,6 +130,67 @@ func TestOOMExplanationWithoutUsage(t *testing.T) {
 	after, err := json.Marshal(row)
 	if err != nil || string(before) != string(after) {
 		t.Fatal("explanation changed the saved scan")
+	}
+}
+
+func TestUnknownOOMLimitWithoutUsageIsNoAction(t *testing.T) {
+	run, row, metrics, result := oomFixtureResult(t, false)
+	memory := result.Analysis.Results[0]
+	if memory.DataQuality.Status != analysis.DataQualityUnavailable || memory.NoActionReason == "" || !slices.Contains(memory.DataQuality.Reasons, analysis.ReasonMissingUsage) || !slices.Contains(memory.DataQuality.Reasons, analysis.ReasonOOMLimitUnknown) || memory.OOMAdjustment != nil || len(memory.Recommendations) != 0 || len(memory.Evidence.OOMKills) != 1 || memory.Evidence.OOMKills[0].MemoryLimitBytes != 0 {
+		t.Fatalf("unknown event-time limit without usage must be a no-action decision: %+v", memory)
+	}
+	d := Build(run, row)
+	for _, stage := range []string{"offline", "empty fetch"} {
+		if stage == "empty fetch" {
+			d.AddMetrics(row, metrics, []string{"NoPrometheusMemoryUsage"})
+			if !strings.Contains(d.ChartStatus, "No historical usage samples") {
+				t.Fatal(d.ChartStatus)
+			}
+		}
+		if len(d.OOMEvents) != 1 || !strings.Contains(d.OOMEvents[0].Label, "limit at termination unknown") {
+			t.Fatalf("%s: unknown OOM event missing: %+v", stage, d.OOMEvents)
+		}
+		memoryCharts := 0
+		for _, chart := range d.Charts {
+			if chart.Resource != "memory" {
+				continue
+			}
+			memoryCharts++
+			oomEvents := 0
+			for _, event := range chart.Events {
+				if event.Kind == "oom" {
+					oomEvents++
+				}
+			}
+			for _, line := range chart.Lines {
+				if line.Style == "oom" || line.Style == "aggregate" {
+					t.Fatalf("%s: chart invented an OOM floor or usage: %+v", stage, line)
+				}
+			}
+			if oomEvents != 1 {
+				t.Fatalf("%s: memory chart lost the OOM marker: %+v", stage, chart)
+			}
+		}
+		if memoryCharts != 1 {
+			t.Fatalf("%s: missing memory timeline: %+v", stage, d.Charts)
+		}
+		for _, card := range d.Cards {
+			if card.Outcome == "recommended" {
+				t.Fatalf("%s: unknown OOM limit produced a recommendation: %+v", stage, card)
+			}
+			for _, step := range card.Steps {
+				if strings.Contains(step.Detail, "(fallback)") {
+					t.Fatalf("%s: unknown OOM limit borrowed a fallback: %+v", stage, card)
+				}
+			}
+		}
+		if text := d.Text(true); text == "" || strings.Contains(text, "(fallback)") || strings.Contains(text, "fallback sizing applies") {
+			t.Fatalf("%s: markdown missing or used a fallback: %s", stage, text)
+		}
+		page, err := HTML(d)
+		if err != nil || !strings.Contains(string(page), "Recorded OOMKilled events") || !strings.Contains(string(page), `"kind":"oom"`) || strings.Contains(string(page), "fallback sizing applies") {
+			t.Fatalf("%s: missing HTML event: %v", stage, err)
+		}
 	}
 }
 

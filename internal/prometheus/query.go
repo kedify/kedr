@@ -89,8 +89,10 @@ func MetricsForStrategy(cfg *config.Config) []string {
 	if cfg.UseOOMKillData || cfg.ClassifyWorkloads {
 		names = append(names, "OOMKilledTimestamp")
 	}
-	if cfg.ClassifyWorkloads {
-		names = append(names, "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods")
+	// simple_limit's CPU limit guard needs raw CFS counters whether or not
+	// workload classification is enabled; simple only sizes requests.
+	if cfg.ClassifyWorkloads || cfg.Strategy == "simple_limit" {
+		names = append(names, cfsFamilies...)
 	}
 	return names
 }
