@@ -49,9 +49,9 @@ func TestHistoricalOwnershipIncludesDeletedPodsAndReplicaSets(t *testing.T) {
 	data := map[string][]series{}
 	for i, name := range []string{"ancient", "third", "older", "previous", "current"} {
 		created := now.Add(-time.Duration(14-i*2) * 24 * time.Hour)
-		data["kube_replicaset_owner"] = append(data["kube_replicaset_owner"], metadata(map[string]string{"namespace": "ns", "replicaset": name, "owner_kind": "Deployment", "owner_name": "app"}, 1))
-		data["kube_replicaset_created"] = append(data["kube_replicaset_created"], metadata(map[string]string{"replicaset": name}, float64(created.Unix())))
-		labels := map[string]string{"pod": name + "-deleted", "uid": name + "-uid", "owner_name": name}
+		data["kube_replicaset_owner"] = append(data["kube_replicaset_owner"], metadata(map[string]string{"namespace": "ns", "replicaset": name, "uid": "rs-" + name, "owner_uid": "current-workload-uid", "owner_kind": "Deployment", "owner_name": "app"}, 1))
+		data["kube_replicaset_created"] = append(data["kube_replicaset_created"], metadata(map[string]string{"replicaset": name, "uid": "rs-" + name}, float64(created.Unix())))
+		labels := map[string]string{"pod": name + "-deleted", "uid": name + "-uid", "owner_name": name, "owner_uid": "rs-" + name}
 		data["kube_pod_owner"] = append(data["kube_pod_owner"], metadata(labels, 1), metadata(labels, 1)) // Duplicate KSM replicas.
 		data["kube_pod_created"] = append(data["kube_pod_created"], metadata(labels, float64(created.Unix())))
 		data["kube_pod_container_info"] = append(data["kube_pod_container_info"], metadata(map[string]string{"pod": name + "-deleted", "uid": name + "-uid", "image": "app:" + name}, 1))
@@ -60,7 +60,7 @@ func TestHistoricalOwnershipIncludesDeletedPodsAndReplicaSets(t *testing.T) {
 	data["kube_pod_owner"] = append(data["kube_pod_owner"], metadata(map[string]string{"pod": "current-live", "uid": "live", "owner_name": "current"}, 1))
 	object := model.Object{Name: "app", Namespace: "ns", Kind: "Deployment", Container: "main", UID: "current-workload-uid", Release: "hash:current", Image: "app:current",
 		Pods:     []model.Pod{{Name: "current-live", UID: "live", Release: "hash:current", CreatedAt: now.Add(-time.Hour).UnixMilli(), Image: "app:current"}},
-		Releases: []model.Release{{ID: "hash:current", Name: "current", Revision: 4}},
+		Releases: []model.Release{{ID: "hash:current", Name: "current", OwnerUID: "rs-current", Revision: 4}},
 	}
 	got := historyClient(t, config.Default("simple"), data).HistoricalPods(context.Background(), object)
 	if len(got.Warnings) != 0 || got.CurrentPods() != 1 || got.DeletedPods() != 4 || len(got.Releases) != 4 {
@@ -90,7 +90,7 @@ func TestDirectOwnersUseHistoricalRevisionsAndBoundPodIncarnations(t *testing.T)
 		t.Run(kind, func(t *testing.T) {
 			now := time.Now().UTC()
 			data := map[string][]series{
-				"kube_pod_owner":          {metadata(map[string]string{"pod": "app-0", "uid": "old", "owner_name": "app"}, 1)},
+				"kube_pod_owner":          {metadata(map[string]string{"pod": "app-0", "uid": "old", "owner_name": "app", "owner_uid": "workload"}, 1)},
 				"kube_pod_created":        {metadata(map[string]string{"pod": "app-0", "uid": "old"}, float64(now.Add(-8*24*time.Hour).Unix()))},
 				"kube_pod_labels":         {metadata(map[string]string{"pod": "app-0", "uid": "old", "label_controller_revision_hash": "previous"}, 1)},
 				"kube_pod_container_info": {metadata(map[string]string{"pod": "app-0", "uid": "old", "image": "app:1"}, 1)},
@@ -107,7 +107,8 @@ func TestDirectOwnersUseHistoricalRevisionsAndBoundPodIncarnations(t *testing.T)
 func TestImageFallbackNeverMergesTwoKnownRevisionsWithSameImage(t *testing.T) {
 	now := time.Now().UTC()
 	data := map[string][]series{
-		"kube_pod_owner":          {metadata(map[string]string{"pod": "deleted", "uid": "old", "owner_name": "app"}, 1)},
+		"kube_pod_created":        {metadata(map[string]string{"pod": "deleted", "uid": "old"}, float64(now.Add(-2*time.Hour).Unix()))},
+		"kube_pod_owner":          {metadata(map[string]string{"pod": "deleted", "uid": "old", "owner_name": "app", "owner_uid": "workload"}, 1)},
 		"kube_pod_container_info": {metadata(map[string]string{"pod": "deleted", "uid": "old", "image": "app:fixed"}, 1)},
 	}
 	object := model.Object{Name: "app", Namespace: "ns", Kind: "DaemonSet", Container: "main", UID: "workload", Release: "B",
@@ -130,5 +131,60 @@ func TestMissingHistoricalMetricsPreserveLiveInventory(t *testing.T) {
 	got := historyClient(t, config.Default("simple"), nil).HistoricalPods(context.Background(), object)
 	if got.CurrentPods() != 1 || !strings.Contains(strings.Join(got.Warnings, ","), "HistoricalOwnershipUnavailable") || strings.Contains(strings.Join(got.Warnings, ","), "HistoricalPodsRequireVerifiedIdentity") {
 		t.Fatalf("missing metadata handled incorrectly: %+v", got)
+	}
+}
+
+func TestRecreatedOwnersAndMissingUIDCannotSupplyHistory(t *testing.T) {
+	obj := model.Object{Name: "app", Namespace: "ns", Kind: "Deployment", UID: "current", Release: "current-release",
+		Releases: []model.Release{{ID: "current-release", Name: "rs", OwnerUID: "live-rs"}}}
+	data := map[string][]series{
+		"kube_replicaset_owner": {metadata(map[string]string{"replicaset": "previous", "uid": "old-rs", "owner_uid": "recreated"}, 1)},
+	}
+	for _, owner := range []string{"old-rs", "", "live-rs"} {
+		labels := map[string]string{"pod": "retired-" + owner, "uid": "pod-" + owner, "owner_name": "rs", "owner_uid": owner}
+		data["kube_pod_owner"] = append(data["kube_pod_owner"], metadata(labels, 1))
+		data["kube_pod_created"] = append(data["kube_pod_created"], metadata(labels, 1800000000))
+	}
+	got := historyClient(t, config.Default("simple"), data).HistoricalPods(context.Background(), obj)
+	if len(got.Pods) != 1 || got.Pods[0].UID != "pod-live-rs" || !got.Pods[0].Deleted {
+		t.Fatalf("wrong historical membership: %+v", got.Pods)
+	}
+}
+
+func TestStockKSMHistoryRequiresLiveControllerLifetime(t *testing.T) {
+	const born = 1800000000
+	for _, kind := range []string{"Deployment", "StatefulSet"} {
+		t.Run(kind, func(t *testing.T) {
+			const release = "controller-revision-hash:current"
+			object := model.Object{Name: "app", Namespace: "ns", Container: "main", UID: "current-workload", Kind: kind, Release: release, WorkloadCreatedAt: born * 1000}
+			ownerName, ownerUID, ownerKind := "app", object.UID, kind
+			if kind == "Deployment" {
+				ownerName, ownerUID, ownerKind = "app-rs", "current-rs", "ReplicaSet"
+				object.Releases = []model.Release{{ID: release, Name: ownerName, OwnerUID: ownerUID, CreatedAt: born * 1000}}
+			}
+			data := map[string][]series{}
+			for _, tc := range []struct {
+				name, uid, parent string
+				created           int
+			}{
+				{"native-after", "pod-ok", "", born + 1}, {"native-before", "pod-old", "", born - 1}, {"same-second", "pod-uncertain", "", born},
+				{"explicit-other", "pod-other", "foreign-owner", born + 1}, {"no-pod-uid", "", "", born + 1}, {"no-birth", "pod-undated", "", 0},
+				{"birth-conflict", "pod-date", "", born - 1}, {"birth-conflict", "pod-date", "", born + 1},
+				{"mixed-mirror", "pod-mixed", "foreign-owner", born + 1}, {"mixed-mirror", "pod-mixed", "", born + 1},
+				{"conflict", "pod-conflict", ownerUID, born + 1}, {"conflict", "pod-conflict", "foreign-owner", born + 1},
+			} {
+				labels := map[string]string{"pod": tc.name, "uid": tc.uid, "owner_name": ownerName, "owner_kind": ownerKind, "owner_is_controller": "true"}
+				if tc.parent != "" {
+					labels["owner_uid"] = tc.parent
+				}
+				data["kube_pod_owner"] = append(data["kube_pod_owner"], metadata(labels, 1))
+				data["kube_pod_created"] = append(data["kube_pod_created"], metadata(map[string]string{"pod": tc.name, "uid": tc.uid}, float64(tc.created)))
+				data["kube_pod_labels"] = append(data["kube_pod_labels"], metadata(map[string]string{"pod": tc.name, "uid": tc.uid, "label_controller_revision_hash": "current"}, 1))
+			}
+			got := historyClient(t, config.Default("simple"), data).HistoricalPods(context.Background(), object)
+			if len(got.Pods) != 1 || got.Pods[0].UID != "pod-ok" || got.Pods[0].Release != release {
+				t.Fatalf("wrong temporal attribution: %+v", got.Pods)
+			}
+		})
 	}
 }

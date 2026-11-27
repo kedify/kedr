@@ -34,7 +34,7 @@ func BenchmarkNativeHistoryDecode(b *testing.B) {
 		if err := json.Unmarshal(data, &response); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := nativeSamples(response.Data.Result); err != nil {
+		if _, err := nativeSamples(response.Data.Result, "CPUUsage"); err != nil {
 			b.Fatal(err)
 		}
 	}

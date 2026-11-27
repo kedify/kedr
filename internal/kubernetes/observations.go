@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,9 +76,13 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 		if object.Kind == "Rollout" {
 			label = "rollouts-pod-template-hash"
 		}
+		const revisionAnnotation = "deployment.kubernetes.io/revision"
+		currentRevision, _ := strconv.ParseInt(object.Annotations[revisionAnnotation], 10, 64)
+		var reusedSet string
+		var interveningStart int64
 		for _, set := range sets.Items {
 			owner := metav1.GetControllerOf(&set)
-			if owner == nil || owner.Name != object.Name || owner.Kind != object.Kind {
+			if owner == nil || owner.Name != object.Name || owner.Kind != object.Kind || string(owner.UID) != object.UID || set.UID == "" {
 				continue
 			}
 			hash := set.Spec.Template.Labels[label]
@@ -86,8 +91,8 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			}
 			release := label + ":" + hash
 			owners[string(set.UID)] = release
-			revision, _ := strconv.ParseInt(set.Annotations["deployment.kubernetes.io/revision"], 10, 64)
-			info := model.Release{ID: release, Name: set.Name, Revision: revision}
+			revision, _ := strconv.ParseInt(set.Annotations[revisionAnnotation], 10, 64)
+			info := model.Release{ID: release, Name: set.Name, OwnerUID: string(set.UID), Revision: revision}
 			if !set.CreationTimestamp.IsZero() {
 				info.CreatedAt = set.CreationTimestamp.UnixMilli()
 			}
@@ -97,11 +102,38 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 				}
 			}
 			object.Releases = append(object.Releases, info)
-			if object.Kind == "Deployment" && object.Annotations["deployment.kubernetes.io/revision"] != "" && set.Annotations["deployment.kubernetes.io/revision"] == object.Annotations["deployment.kubernetes.io/revision"] {
+			reused := set.Annotations["deployment.kubernetes.io/revision-history"] != ""
+			if currentRevision > 1 && revision == currentRevision-1 && !reused {
+				interveningStart = info.CreatedAt
+			}
+			if object.Kind == "Deployment" && revision > 0 && revision == currentRevision {
 				if object.Release != "" && object.Release != release {
 					object.IdentityAmbiguous = true
 				}
 				object.Release = release
+				if object.Generation > 0 && object.Generation == object.ObservedGeneration {
+					if !reused {
+						// A new ReplicaSet may lose a Pod before the rollout completes.
+						object.ReleaseStartedAt = info.CreatedAt
+						object.RolloutBoundaryVerified = info.CreatedAt > 0
+					} else {
+						// A rollback reuses this UID and hash from an earlier activation.
+						reusedSet = set.Name
+					}
+				}
+			}
+		}
+		if reusedSet != "" {
+			// Only creation of the immediately preceding, never-reused revision
+			// proves when control passed away from this set. A pruned or reused
+			// predecessor cannot date an activation from its birth timestamp.
+			completed := object.DeploymentCompletedAt
+			if interveningStart > 0 && completed > interveningStart && object.DeploymentCompletionMessage == fmt.Sprintf("ReplicaSet %q has successfully progressed.", reusedSet) {
+				object.ReleaseStartedAt, object.ReleaseStartInferred, object.RolloutBoundaryVerified = completed, true, true
+				object.RollbackIntervalStart = interveningStart
+			} else {
+				object.IdentityAmbiguous = true
+				object.Warnings = append(object.Warnings, "RollbackActivationUnverified")
 			}
 		}
 	case "CronJob":
@@ -166,6 +198,14 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 		failure := model.PodFailureObservation{PodName: pod.Name, PodUID: string(pod.UID), Release: release,
 			Evicted: pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted"}
 		p := model.Pod{Name: pod.Name, UID: string(pod.UID), Release: release, CreatedAt: pod.CreationTimestamp.UnixMilli(), Deleted: deleted, Image: container.Image, Allocations: allocations(*container)}
+		// Without applied status, an active resize leaves the current settings unknown.
+		if pod.Status.Resize != "" || slices.ContainsFunc(pod.Status.Conditions, func(c corev1.PodCondition) bool { //nolint:staticcheck // older kubelets expose resize state only here
+			return c.Status == corev1.ConditionTrue && (c.Type == corev1.PodResizePending || c.Type == corev1.PodResizeInProgress)
+		}) {
+			for _, r := range []model.ResourceType{model.CPU, model.Memory} {
+				p.Allocations.Requests[r], p.Allocations.Limits[r] = model.Unknown(), model.Unknown()
+			}
+		}
 		if !deleted {
 			currentReleases[release] = true
 		}
@@ -174,6 +214,10 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 				continue
 			}
 			recordContainerFailure(&failure, status)
+			if status.Resources != nil {
+				// During an in-place resize desired and applied allocations can differ.
+				p.Allocations = allocations(corev1.Container{Resources: *status.Resources})
+			}
 			p.ContainerID = status.ContainerID
 			if status.State.Running != nil && !status.State.Running.StartedAt.IsZero() {
 				p.ContainerStartedAt = status.State.Running.StartedAt.UnixMilli()
@@ -208,7 +252,7 @@ func (l *Loader) Observe(ctx context.Context, clients Clients, object model.Obje
 			var latest model.Release
 			for _, revision := range revisions.Items {
 				owner := metav1.GetControllerOf(&revision)
-				if owner == nil || owner.Kind != object.Kind || owner.Name != object.Name {
+				if owner == nil || owner.Kind != object.Kind || owner.Name != object.Name || string(owner.UID) != object.UID {
 					continue
 				}
 				hash := revision.Name

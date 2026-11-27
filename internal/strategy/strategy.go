@@ -4,6 +4,7 @@ package strategy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kedify/kedr/internal/config"
@@ -14,13 +15,14 @@ import (
 type Point struct{ Time, Value float64 }
 
 type Metrics struct {
-	ClassifyWorkloads bool
-	Throttling        analysis.CPUThrottlingObservation
-	WindowStart       int64
-	EvaluationTime    int64
-	CPU               []analysis.Series
-	Memory            []analysis.Series
-	OOMKills          []analysis.OOMKill
+	OOMCoverageIncomplete bool
+	ClassifyWorkloads     bool
+	Throttling            analysis.CPUThrottlingObservation
+	WindowStart           int64
+	EvaluationTime        int64
+	CPU                   []analysis.Series
+	Memory                []analysis.Series
+	OOMKills              []analysis.OOMKill
 }
 
 type RawRecommendation struct {
@@ -40,18 +42,22 @@ type Result struct {
 // historical identity or turn absent metrics into observed zeroes.
 func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.Input {
 	target := analysis.Target{Namespace: object.Namespace, Kind: object.Kind, Name: object.Name, Container: object.Container, WorkloadUID: object.UID, Release: object.Release}
+	currentPods := map[string]int64{}
 	eligible := 0
 	for _, pod := range object.Pods {
 		if !pod.Deleted && pod.EndedAt == 0 && pod.Release == object.Release {
 			eligible++
+			if pod.UID != "" {
+				currentPods[pod.UID] = pod.ContainerStartedAt
+			}
 		}
 	}
 	c := analysis.ContainerObservation{
 		Target:   target,
-		Identity: analysis.CurrentIdentity{Available: object.UID != "" && object.Release != "", WorkloadUID: object.UID, Release: object.Release, Timestamp: object.ObservedAt, ReleaseStartedAt: object.ReleaseStartedAt, ReleaseStartInferred: object.ReleaseStartInferred, Ambiguous: object.IdentityAmbiguous},
+		Identity: analysis.CurrentIdentity{Available: object.UID != "" && object.Release != "", WorkloadUID: object.UID, Release: object.Release, Timestamp: object.ObservedAt, ReleaseStartedAt: object.ReleaseStartedAt, ReleaseStartInferred: object.ReleaseStartInferred, RolloutBoundaryVerified: object.RolloutBoundaryVerified, Ambiguous: object.IdentityAmbiguous},
 		// The analyzer independently compares each resource's fresh observed pods
 		// to this API inventory; metric availability is not assumed here.
-		Inventory: analysis.Inventory{Available: object.InventoryAvailable, Timestamp: object.ObservedAt, Eligible: eligible, Observed: eligible, Excluded: object.ExcludedPods},
+		Inventory: analysis.Inventory{Available: object.InventoryAvailable, Timestamp: object.ObservedAt, Eligible: eligible, CurrentPods: currentPods, Observed: eligible, Excluded: object.ExcludedPods},
 		CPU:       analysis.ResourceObservation{Series: releaseSeries(metrics.CPU, object.Release)},
 		Memory:    analysis.ResourceObservation{Series: releaseSeries(metrics.Memory, object.Release)},
 	}
@@ -62,12 +68,24 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 		entry.obs.CurrentRequest = currentSignal(object, entry.resource, false)
 		entry.obs.CurrentLimit = currentSignal(object, entry.resource, true)
 	}
+	c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
+	c.OOMCoverageIncomplete = metrics.OOMCoverageIncomplete || slices.ContainsFunc(c.OOMKills, func(kill analysis.OOMKill) bool {
+		if kill.WorkloadUID != target.WorkloadUID || kill.Release != target.Release {
+			return false
+		}
+		// In a reused ReplicaSet an OOM before completion may belong to either
+		// activation. Hold decreases without using an unproven failed limit.
+		_, survivingPod := currentPods[kill.PodUID]
+		return kill.Timestamp > metrics.EvaluationTime || (object.RollbackIntervalStart > 0 &&
+			kill.Timestamp >= metrics.WindowStart && kill.Timestamp < object.ReleaseStartedAt &&
+			(survivingPod || kill.Timestamp >= object.RollbackIntervalStart))
+	})
 	if cfg.ClassifyWorkloads {
 		observation := analysis.ClassificationObservation{}
 		if object.Classification != nil {
 			observation = *object.Classification
 		}
-		observation.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
+		observation.OOMKills = c.OOMKills
 		observation.Throttling = metrics.Throttling
 		observation.Issues = append(append([]string(nil), observation.Issues...), object.Warnings...)
 		c.Classification = &observation
@@ -75,9 +93,6 @@ func Input(cfg *config.Config, metrics Metrics, object model.Object) analysis.In
 		// Raw CFS observations feed the shared CPU limit-reduction guard. Without
 		// a classification policy the engine derives no workload badges from them.
 		c.Classification = &analysis.ClassificationObservation{Throttling: metrics.Throttling}
-	}
-	if cfg.UseOOMKillData {
-		c.OOMKills = append(append([]analysis.OOMKill(nil), object.OOMKills...), metrics.OOMKills...)
 	}
 	// Discovery orders and retains the current rollout plus up to three previous
 	// rollouts. Supply each source separately; never pool or relabel its samples.
@@ -119,7 +134,7 @@ func currentSignal(object model.Object, resource model.ResourceType, limit bool)
 		signal.Value = value.Value
 	}
 	for _, pod := range object.Pods {
-		if pod.Deleted || pod.Release != object.Release {
+		if pod.Deleted || pod.EndedAt != 0 || pod.Release != object.Release {
 			continue
 		}
 		actual := pod.Allocations.Requests[resource]

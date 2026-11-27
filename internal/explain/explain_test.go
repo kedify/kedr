@@ -200,6 +200,7 @@ func TestVisualFixtures(t *testing.T) {
 func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
 	run, row, metrics := fixture(t)
 	row.Scan.Analysis.EffectivePolicy.CPU.LimitReductionGuard = &analysis.CPULimitReductionGuardPolicy{}
+	row.Digest = "normalized-v3:" + strings.TrimPrefix(row.Digest, runstore.MetricDigestPrefix)
 	doc := Build(run, row)
 	doc.AddMetrics(row, metrics, nil)
 	if !strings.HasPrefix(doc.ChartStatus, "Unverifiable") {
@@ -214,9 +215,29 @@ func TestGuardedMetricVerificationRequiresGuardDigest(t *testing.T) {
 	if !strings.HasPrefix(doc.ChartStatus, "Verified") {
 		t.Fatalf("unchanged guarded digest was not verified: %s", doc.ChartStatus)
 	}
+	metrics.OOMCoverageIncomplete = true
+	doc.AddMetrics(row, metrics, nil)
+	if !strings.HasPrefix(doc.ChartStatus, "Changed") {
+		t.Fatalf("failed OOM collection verified as complete: %s", doc.ChartStatus)
+	}
+	metrics.OOMCoverageIncomplete = false
 	metrics.Throttling.SourceComplete = !metrics.Throttling.SourceComplete
 	doc.AddMetrics(row, metrics, nil)
 	if !strings.HasPrefix(doc.ChartStatus, "Changed") {
 		t.Fatalf("changed guarded coverage was not detected: %s", doc.ChartStatus)
+	}
+}
+
+func TestTraceQuantitiesKeepTheirOwnUnits(t *testing.T) {
+	// Older saved memory traces use the same byte-valued operands.
+	for _, key := range []string{"usage", "baseline", "floor", "candidate", "currentLimit", "absoluteChange"} {
+		if got := traceValue(model.Memory, key, 512<<20); got != "512 MiB" {
+			t.Errorf("%s: got %s", key, got)
+		}
+	}
+	for key, want := range map[string]string{"freshnessSeconds": "300 s", "throttledSeconds": "300 s", "minimumPositiveIntervals": "300", "eligiblePods": "300", "candidate": "300 mCPU", "sourceComplete": "true"} {
+		if got := traceValue(model.CPU, key, 300); got != want {
+			t.Errorf("%s: got %s, want %s", key, got, want)
+		}
 	}
 }

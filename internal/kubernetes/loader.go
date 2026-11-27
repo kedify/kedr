@@ -357,6 +357,10 @@ func selectorString(selector *metav1.LabelSelector) string {
 }
 func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector string, containers []corev1.Container, hpas map[hpaKey]*model.HPA) []model.Object {
 	out := make([]model.Object, 0, len(containers))
+	var createdAt int64
+	if !meta.CreationTimestamp.IsZero() {
+		createdAt = meta.CreationTimestamp.UnixMilli()
+	}
 	objectLabels := meta.Labels
 	if objectLabels == nil {
 		objectLabels = map[string]string{}
@@ -366,7 +370,7 @@ func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector
 		objectAnnotations = map[string]string{}
 	}
 	for _, container := range containers {
-		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Image: container.Image, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID), Generation: meta.Generation, ObservedAt: time.Now().UnixMilli()})
+		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Image: container.Image, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID), WorkloadCreatedAt: createdAt, Generation: meta.Generation, ObservedAt: time.Now().UnixMilli()})
 	}
 	return out
 }
@@ -384,6 +388,7 @@ func (l *Loader) fromStandalonePod(cluster *string, pod *corev1.Pod) []model.Obj
 		out[i].ObservedGeneration = pod.Generation
 		if !pod.CreationTimestamp.IsZero() {
 			out[i].ReleaseStartedAt = pod.CreationTimestamp.UnixMilli()
+			out[i].RolloutBoundaryVerified = true
 		}
 		out[i].Releases = []model.Release{{ID: out[i].Release, Name: pod.Name, Image: out[i].Image, CreatedAt: out[i].ReleaseStartedAt, Current: true}}
 	}
@@ -394,12 +399,13 @@ func (l *Loader) fromDeployment(c *string, x *appsv1.Deployment, h map[hpaKey]*m
 	out := l.objects(c, x.ObjectMeta, "Deployment", selectorString(x.Spec.Selector), x.Spec.Template.Spec.Containers, h)
 	for i := range out {
 		out[i].ObservedGeneration = x.Status.ObservedGeneration
-		// Completion is a conservative activation boundary, including rollbacks
-		// that reuse an old ReplicaSet. Pod replacement does not move it forward.
+		if x.Generation == 0 || x.Generation != x.Status.ObservedGeneration {
+			continue
+		}
 		for _, condition := range x.Status.Conditions {
 			if condition.Type == appsv1.DeploymentProgressing && condition.Reason == "NewReplicaSetAvailable" && condition.Status == corev1.ConditionTrue && !condition.LastUpdateTime.IsZero() {
-				out[i].ReleaseStartedAt = condition.LastUpdateTime.UnixMilli()
-				out[i].ReleaseStartInferred = true
+				out[i].DeploymentCompletedAt = condition.LastUpdateTime.UnixMilli()
+				out[i].DeploymentCompletionMessage = condition.Message
 			}
 		}
 	}

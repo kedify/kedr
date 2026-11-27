@@ -50,14 +50,18 @@ func savedOOMEvents(row runstore.Row) []Event {
 	for _, result := range row.Scan.Analysis.Results {
 		if result.Resource == analysis.ResourceMemory {
 			for _, kill := range result.Evidence.OOMKills {
-				kills[kill.ID] = kill
+				if prior, found := kills[kill.ID]; !found || prior.MemoryLimitBytes == 0 {
+					kills[kill.ID] = kill
+				}
 			}
 		}
 	}
 	if c := row.Scan.Classification(); c != nil {
 		for _, finding := range c.Findings {
 			for _, kill := range finding.OOMKills {
-				kills[kill.ID] = kill
+				if prior, found := kills[kill.ID]; !found || prior.MemoryLimitBytes == 0 {
+					kills[kill.ID] = kill
+				}
 			}
 		}
 	}

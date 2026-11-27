@@ -54,7 +54,7 @@ func TestMetricQueries(t *testing.T) {
 }
 
 func TestConvertSeriesPrefersKubelet(t *testing.T) {
-	input := []sampledSeries{{labels: map[string]string{"pod": "p", "job": "z", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 2}}}, {labels: map[string]string{"pod": "p", "job": "kubelet", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 3}}}}
+	input := []sampledSeries{{labels: map[string]string{"pod": "p", "uid": "pod", "job": "z", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 2}}}, {labels: map[string]string{"pod": "p", "uid": "pod", "job": "kubelet", "id": "lifetime"}, samples: []analysis.Sample{{Timestamp: 1000, Value: 3}}}}
 	object := model.Object{UID: "workload", Container: "main", Pods: []model.Pod{{Name: "p", UID: "pod", Release: "A", CreatedAt: 1}}}
 	got, excluded := convertUsage(input, object, analysis.SampleGauge)
 	if excluded || len(got) != 1 || got[0].Samples[0].Value != 3 {

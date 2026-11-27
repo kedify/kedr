@@ -12,12 +12,9 @@ import (
 	"github.com/kedify/kedr/internal/model"
 )
 
-// HistoricalPods reconstructs membership by namespace and owner name, including
-// deleted pods and ReplicaSets. Workload UIDs are intentionally not a join key:
-// same-name workload replacement is treated as one workload by kedr.
+// HistoricalPods reconstructs deleted Pods only when their controller UID chain is verified.
 func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.Object {
 	end := time.Now().UTC()
-	start := end.Add(-history(c.cfg)).UnixMilli()
 	warn := func(message string) {
 		for _, existing := range object.Warnings {
 			if existing == message {
@@ -40,45 +37,59 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 	}
 	releases := map[string]model.Release{}
 	ownerRelease := map[string]string{}
+	liveOwners := map[string]model.Release{}
+	if object.Kind == "StatefulSet" || object.Kind == "DaemonSet" {
+		liveOwners[object.Name] = model.Release{OwnerUID: object.UID, CreatedAt: object.WorkloadCreatedAt}
+	}
 	for _, release := range object.Releases {
 		releases[release.ID] = release
-		ownerRelease[release.Name] = release.ID
+		if release.OwnerUID != "" {
+			ownerRelease[release.OwnerUID] = release.ID
+			liveOwners[release.Name] = release
+		}
 	}
+	ownerKind := object.Kind
 	var ownerMatcher string
 	switch object.Kind {
 	case "Deployment", "Rollout":
+		ownerKind = "ReplicaSet"
 		rows, ok := values("kube_replicaset_owner", fmt.Sprintf(",owner_kind=%q,owner_name=%q,owner_is_controller=\"true\"", object.Kind, object.Name))
 		for _, row := range rows {
 			if !positive(row) || row.Metric["replicaset"] == "" {
 				continue
 			}
 			name := row.Metric["replicaset"]
-			if _, exists := ownerRelease[name]; !exists {
-				id := "replicaset:" + name
-				ownerRelease[name] = id
-				releases[id] = model.Release{ID: id, Name: name}
+			if row.Metric["owner_uid"] != object.UID || object.UID == "" || row.Metric["uid"] == "" {
+				continue
+			}
+			uid := row.Metric["uid"]
+			if _, exists := ownerRelease[uid]; !exists {
+				id := "replicaset:" + uid
+				ownerRelease[uid] = id
+				releases[id] = model.Release{ID: id, Name: name, OwnerUID: uid}
 			}
 		}
 		if ok && len(rows) == 0 {
 			warn("HistoricalOwnershipUnavailable:kube_replicaset_owner")
 		}
 		if len(ownerRelease) == 0 {
+			warn("HistoricalPodIdentityUnverified")
 			return object
 		}
 		names := make([]string, 0, len(ownerRelease))
-		for name := range ownerRelease {
-			names = append(names, regexp.QuoteMeta(name))
+		for _, id := range ownerRelease {
+			names = append(names, regexp.QuoteMeta(releases[id].Name))
 		}
 		sort.Strings(names)
 		pattern := strings.Join(names, "|")
 		created, _ := values("kube_replicaset_created", fmt.Sprintf(",replicaset=~%q", pattern))
 		for _, row := range created {
-			id := ownerRelease[row.Metric["replicaset"]]
+			id := ownerRelease[row.Metric["uid"]]
 			if id == "" {
 				continue
 			}
 			release := releases[id]
-			if ts := timestampValue(row); ts > 0 {
+			if ts := timestampValue(row); ts > 0 && release.CreatedAt == 0 && row.Metric["replicaset"] == release.Name {
 				release.CreatedAt = ts
 			}
 			releases[id] = release
@@ -95,9 +106,18 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 	}
 	// Metadata is batched by discovered pod names, not guessed name prefixes.
 	names := map[string]bool{}
+	key := func(labels map[string]string) string { return labels["pod"] + "\x00" + labels["uid"] }
+	parents := map[string]map[string]bool{}
 	for _, row := range owners {
 		if positive(row) && row.Metric["pod"] != "" {
 			names[row.Metric["pod"]] = true
+			if parent := row.Metric["owner_uid"]; parent != "" {
+				id := key(row.Metric)
+				if parents[id] == nil {
+					parents[id] = map[string]bool{}
+				}
+				parents[id][parent] = true
+			}
 		}
 	}
 	ordered := make([]string, 0, len(names))
@@ -121,11 +141,14 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 			labels = append(labels, rows...)
 		}
 	}
-	key := func(labels map[string]string) string { return labels["pod"] + "\x00" + labels["uid"] }
 	births := map[string]int64{}
 	for _, row := range created {
 		if ts := timestampValue(row); ts > 0 {
-			births[key(row.Metric)] = ts
+			id := key(row.Metric)
+			if previous, exists := births[id]; exists && previous != ts {
+				ts = 0
+			}
+			births[id] = ts
 		}
 	}
 	images := map[string]string{}
@@ -140,57 +163,42 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 			revisions[key(row.Metric)] = "controller-revision-hash:" + revision
 		}
 	}
-	// Live pod images can identify a revision when KSM does not export revision
-	// labels, but never choose between two revisions using the same image.
-	imageRelease := map[string]string{}
-	for _, info := range releases {
-		if info.Image == "" {
-			continue
-		}
-		if old, exists := imageRelease[info.Image]; exists && old != info.ID {
-			imageRelease[info.Image] = ""
-		} else if !exists {
-			imageRelease[info.Image] = info.ID
-		}
-	}
-	for _, pod := range object.Pods {
-		if pod.Image == "" || pod.Release == "" {
-			continue
-		}
-		if old, exists := imageRelease[pod.Image]; exists && old != pod.Release {
-			imageRelease[pod.Image] = ""
-		} else if !exists {
-			imageRelease[pod.Image] = pod.Release
-		}
-	}
 	known := map[string]bool{}
-	knownNames := map[string]bool{}
 	for _, pod := range object.Pods {
 		known[pod.Name+"\x00"+pod.UID] = true
-		knownNames[pod.Name] = true
 	}
 	for _, row := range owners {
 		name, uid := row.Metric["pod"], row.Metric["uid"]
-		if !positive(row) || name == "" || known[key(row.Metric)] || uid == "" && knownNames[name] {
+		if !positive(row) || name == "" || known[key(row.Metric)] {
+			continue
+		}
+		id := key(row.Metric)
+		createdAt := births[id]
+		parent := row.Metric["owner_uid"]
+		// Stock KSM carries the Pod UID and controller name. A Pod born strictly
+		// after the live controller excludes Pods from a same-name predecessor.
+		// Never use this fallback for a retired owner or against explicit UIDs.
+		if parent == "" && len(parents[id]) == 0 && row.Metric["owner_kind"] == ownerKind && row.Metric["owner_is_controller"] == "true" {
+			owner := liveOwners[row.Metric["owner_name"]]
+			if owner.CreatedAt > 0 && createdAt > owner.CreatedAt {
+				parent = owner.OwnerUID
+			}
+		}
+		release := ownerRelease[parent]
+		verified := parent != "" && parent == object.UID && object.Name == row.Metric["owner_name"]
+		if object.Kind == "Deployment" || object.Kind == "Rollout" {
+			verified = release != "" && releases[release].Name == row.Metric["owner_name"]
+		}
+		if uid == "" || !verified || createdAt == 0 || len(parents[id]) > 1 {
+			warn("HistoricalPodIdentityUnverified")
 			continue
 		}
 		image := images[key(row.Metric)]
-		if image == "" {
-			image = images[name+"\x00"]
-		}
-		release := ownerRelease[row.Metric["owner_name"]]
 		if object.Kind == "StatefulSet" || object.Kind == "DaemonSet" {
 			release = revisions[key(row.Metric)]
-			if release == "" {
-				release = revisions[name+"\x00"]
-			}
 			if release == "" && image != "" {
-				release = imageRelease[image]
-				if release == "" {
-					// Different images remain separate historical cohorts. They
-					// cannot influence sizing for the current controller revision.
-					release = "image:" + image
-				}
+				// An image alone cannot identify configuration-only rollouts.
+				release = "image:" + image
 				warn("HistoricalReleaseIdentityUsesImage")
 			}
 		}
@@ -198,19 +206,8 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 			warn("HistoricalReleaseIdentityUnavailable")
 			continue
 		}
-		createdAt := births[key(row.Metric)]
-		if createdAt == 0 {
-			createdAt = births[name+"\x00"]
-		}
-		if createdAt == 0 {
-			createdAt = start
-		}
-		if uid == "" {
-			uid = "pod:" + object.Namespace + "/" + name
-		}
 		object.Pods = append(object.Pods, model.Pod{Name: name, UID: uid, Release: release, CreatedAt: createdAt, Deleted: true, Image: image})
 		known[key(row.Metric)] = true
-		knownNames[name] = true
 		info := releases[release]
 		info.ID = release
 		if info.Name == "" {

@@ -23,9 +23,8 @@ container in this scan, with CPU/memory charts and the reasoning behind each
 recommendation. [View the report screenshot](docs/images/kedify-agent-explain.png).
 Row numbers belong to the saved scan and may differ in your cluster.
 
-KEDR can also detect **OOMKills and recommend a memory increase** with
-`--use-oomkill-data`. In this demo, OOM evidence raises Parca's recommended memory
-request from **2,588 MiB to 3,882 MiB**, using the default 50% OOM buffer.
+This recording shows an earlier OOM policy. Current scans require an observed
+limit at termination for an OOM-based increase. An unknown failed limit holds a decrease.
 KEDR reports recommendations; it does not apply resource changes to the cluster.
 
 ## Install and run
@@ -161,8 +160,7 @@ current context. `--offline` and `--format text` need no credentials.
 
 Use `kedr export-patch <row> [--run <run-id>]` to export a Deployment container
 patch for review as JSON. The export uses the saved decision without network
-access and preserves held settings. An offline export has an empty `checks` list
-and omits `checkedAt`. Use `--cluster-id` to use a registered cluster ID in place
+access and preserves held settings. Offline exports mark workload identity, revision, current settings, and freshness checks as unperformed. Older runs need a new scan to export changes that depend on newer safety checks. Use `--cluster-id` to use a registered cluster ID in place
 of the saved Prometheus label or kubeconfig context name.
 
 The report explains the strategy's actual behavior, including retained limits,
@@ -183,7 +181,10 @@ and bounds. `simple` retains CPU limits; `explain` does not introduce limit remo
 
 Known unset requests and limits can receive initial values below the analyzer's
 minimum-change thresholds. These thresholds apply only to existing numeric
-settings. Evidence and safety guards still apply; `simple` continues to leave CPU
+settings. New CPU caps must cover recurring current-runtime demand. Reducing an
+existing CPU cap also requires aligned current-runtime CFS intervals at its applied
+quota, checked with `container_spec_cpu_quota` and `container_spec_cpu_period`.
+Evidence and safety guards still apply; `simple` continues to leave CPU
 limits unchanged, while `simple_limit` can initialize them.
 
 The analyzer requires one hour of observed history by default, 30 distinct
@@ -228,21 +229,21 @@ of minute-level scrapes to qualify, including modest gaps within the 90% coverag
 guard. Pod uptime alone does not guarantee enough observed history or coverage.
 An explicit `--points-required 100` still requires 100 distinct observation times.
 
-Deployments use ReplicaSets as release boundaries, including image **and** other
-pod-template changes. Current rollout revision takes precedence over creation
-time (important for rollback); available rollout-completion time is used as a
-conservative start boundary. Images are included in release metadata for
-explanation, not used to merge different ReplicaSets. Reusing a mutable image tag
-without creating a new rollout is not automatically a new release.
+Deployments use the controller-owned ReplicaSet for the current revision. A
+new ReplicaSet's creation time includes failures that occur before the rollout
+finishes. On rollback, KEDR checks that the current ReplicaSet's completion
+follows the first activation of the preceding revision. A missing or reused
+predecessor leaves the activation unverified and holds sizing. A kill in the
+uncertain interval before verified completion, or in a surviving Pod before the
+rollback, holds memory decreases. Reusing an
+image tag without changing the Pod template keeps the same release.
 
-StatefulSets and DaemonSets use controller revisions. Historical
-`kube_pod_labels{label_controller_revision_hash="..."}` gives the precise revision
-when KSM exports that label. Otherwise, image metadata can associate a historical
-pod with a known revision **only if the image identifies one revision uniquely**;
-this fallback is disclosed as `HistoricalReleaseIdentityUsesImage`. Ambiguous or
-unmatched images are comparison-only cohorts, never relabeled as the current
-revision. Export the controller-revision-hash pod label to distinguish
-configuration-only rollouts reliably.
+StatefulSets and DaemonSets use controller revisions. KEDR can use a historical
+Pod for sizing when its UID, creation time, controller UID and revision are
+known. Export `kube_pod_labels{label_controller_revision_hash="..."}` with
+kube-state-metrics to supply that revision. When only an image is known, KEDR
+keeps the Pod in an image cohort for comparison and reports
+`HistoricalReleaseIdentityUsesImage`.
 
 KEDR retains its HPA guard, severity, and scoring. Unless `--allow-hpa` is set,
 HPA-managed resources display `?`. Raw analyzer output remains available for
@@ -252,12 +253,12 @@ result retains the current setting; unavailable evidence displays `?`.
 
 ### Optional diagnostics
 
-`--use-oomkill-data` forwards actual OOMKilled termination events from Kubernetes
-pod status and, when available, kube-state-metrics. Repeated observations use the
+Every scan uses verified OOMKilled events already present in Pod status. Enable
+`--use-oomkill-data` to also collect kube-state-metrics termination history and display the OOM column. Repeated observations use the
 same event ID. Current-rollout OOM evidence can trigger a memory increase without
 usage samples, minimum history, coverage, or fresh usage. The failed limit is used
-when known; otherwise the analyzer explicitly falls back to the current memory
-limit, then the current request, then qualifying usage. Repeated events do not
+when known. Pod status and stock kube-state-metrics omit the applied limit at
+termination, so their events protect existing settings without setting a numeric floor. Repeated events do not
 compound the multiplier. Unknown failed limits block reductions. Existing resource
 bounds and change thresholds still apply, including the default 100Mi minimum.
 `--oom-memory-buffer-percentage` defaults to 50 (a multiplier of 1.5).
@@ -299,8 +300,8 @@ The shared recommender assigns zero or more advisory tags:
 | `has-http-traffic` | A Service port named for HTTP, HTTPS, REST, API or web, or with an HTTP appProtocol hint. Health/probe/metrics-only port names are excluded. |
 | `has-metrics` | A successful endpoint response containing valid Prometheus/OpenMetrics samples. |
 
-Classification alone does not change sizing. `--use-oomkill-data` still controls
-OOM sizing adjustments and the dedicated OOM column; `--detect-memory-leaks`
+Classification displays advisory findings. Verified OOM events from its history
+query also inform memory sizing. `--use-oomkill-data` enables the dedicated OOM column; `--detect-memory-leaks`
 still controls the dedicated leak column. OOM and leak tags are independent.
 
 Variance uses the latest 24 hours within the requested window and current release,
@@ -386,15 +387,21 @@ The Prometheus-compatible service should expose:
 
 - `container_cpu_usage_seconds_total`
 - `container_memory_working_set_bytes`
+- For finite CPU limit reductions, the three `container_cpu_cfs_*` counters above
+  and `container_spec_cpu_quota` and `container_spec_cpu_period` from cAdvisor.
 - Historical ownership: `kube_pod_owner`, and `kube_replicaset_owner` for
-  Deployments/Rollouts. Ownership is joined by namespace and owner name; deleted
-  pods and deleted ReplicaSets are included when their KSM series are retained.
+  Deployments/Rollouts. Historical Pods need their own UID and creation time.
+  Stock KSM can attribute a Pod born after its still-live controller using its
+  controller name and the creation time verified from Kubernetes. Deleted
+  controllers require enriched owner UIDs throughout the chain.
 - Historical metadata: `kube_pod_created`, `kube_replicaset_created`, and
   `kube_pod_container_info`; `kube_pod_labels` supplies controller revisions when
   that pod label is allowed in KSM.
 - For optional OOM history: `kube_pod_container_status_last_terminated_reason`
   and `kube_pod_container_status_last_terminated_timestamp`.
 
+Usage is attributed by the metric's Pod UID, a matching Pod UID in its cgroup path,
+or the verified live runtime. A reused Pod name alone cannot establish membership.
 Usage queries fetch individual CPU counters and memory gauges using instant
 range-vector queries, not precomputed rates/percentiles/maxima or a resampled
 `query_range` grid. Every original scrape timestamp is preserved. Batches contain

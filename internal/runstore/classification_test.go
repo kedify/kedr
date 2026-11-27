@@ -14,7 +14,7 @@ func TestClassificationDigestVersionAndThrottlingSensitivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(old, "normalized-v1:") {
+	if !strings.HasPrefix(old, MetricDigestPrefix) {
 		t.Fatal("old digest changed")
 	}
 	metrics.ClassifyWorkloads = true
@@ -23,7 +23,7 @@ func TestClassificationDigestVersionAndThrottlingSensitivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(first, "normalized-v2:") {
+	if !strings.HasPrefix(first, MetricDigestPrefix) {
 		t.Fatal("classification digest version missing")
 	}
 	metrics.Throttling.Seconds[0].Samples[1].Value = 2
@@ -40,7 +40,7 @@ func TestGuardedDigestIncludesCountersAndCoverage(t *testing.T) {
 	metrics := strategy.Metrics{WindowStart: 1000, EvaluationTime: 3000}
 	metrics.Throttling.Periods = []analysis.Series{{ID: "pod", Kind: analysis.SampleGauge, Samples: []analysis.Sample{{Timestamp: 1000, Value: 1}}}}
 	first, err := row.MetricsDigest(metrics)
-	if err != nil || !strings.HasPrefix(first, "normalized-v3:") {
+	if err != nil || !strings.HasPrefix(first, MetricDigestPrefix) {
 		t.Fatalf("expected a guard digest, got %q: %v", first, err)
 	}
 	metrics.Throttling.SourceComplete = true
@@ -48,9 +48,27 @@ func TestGuardedDigestIncludesCountersAndCoverage(t *testing.T) {
 	if err != nil || first == second {
 		t.Fatal("changed coverage did not change the guarded digest")
 	}
+	metrics.Throttling.Periods[0].CPUGuardStart = 1000
+	boundary, err := row.MetricsDigest(metrics)
+	if err != nil || boundary == second {
+		t.Fatal("changed quota proof start did not change the guarded digest")
+	}
 	metrics.Throttling.Periods[0].Samples[0].Value++
 	third, err := row.MetricsDigest(metrics)
-	if err != nil || second == third {
+	if err != nil || boundary == third {
 		t.Fatal("changed counters did not change the guarded digest")
+	}
+}
+
+func TestSavedFingerprintSeparatesFailedFromEmptyOOMRead(t *testing.T) {
+	metrics := strategy.Metrics{WindowStart: 1000, EvaluationTime: 3000}
+	complete, err := MetricsDigest(metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics.OOMCoverageIncomplete = true
+	incomplete, err := MetricsDigest(metrics)
+	if err != nil || complete == incomplete {
+		t.Fatalf("missing OOM history indistinguishable from complete empty result: %v", err)
 	}
 }

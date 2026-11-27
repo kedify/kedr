@@ -38,6 +38,10 @@ func BuildMetricQuery(metric string, object model.Object, cfg *config.Config) st
 		return fmt.Sprintf(`container_cpu_cfs_throttled_seconds_total{%s}`, labels)
 	case "CPUThrottledPeriods":
 		return fmt.Sprintf(`container_cpu_cfs_throttled_periods_total{%s}`, labels)
+	case "CPUQuota":
+		return fmt.Sprintf(`container_spec_cpu_quota{%s}`, labels)
+	case "CPUPeriod":
+		return fmt.Sprintf(`container_spec_cpu_period{%s}`, labels)
 	case "CPUPeriods":
 		return fmt.Sprintf(`container_cpu_cfs_periods_total{%s}`, labels)
 	case "OOMKilledTimestamp":
@@ -93,6 +97,9 @@ func MetricsForStrategy(cfg *config.Config) []string {
 	// workload classification is enabled; simple only sizes requests.
 	if cfg.ClassifyWorkloads || cfg.Strategy == "simple_limit" {
 		names = append(names, cfsFamilies...)
+	}
+	if cfg.Strategy == "simple_limit" {
+		names = append(names, "CPUQuota", "CPUPeriod")
 	}
 	return names
 }

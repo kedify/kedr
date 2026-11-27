@@ -34,9 +34,13 @@ func matrixBody(rows ...string) string {
 }
 
 func matrixRow(labels string, step, count int, value func(i int) float64) string {
+	return matrixRowWithOffset(labels, step, count, 0, value)
+}
+
+func matrixRowWithOffset(labels string, step, count, offset int, value func(i int) float64) string {
 	points := make([]string, 0, count)
 	for i := 1; i <= count; i++ {
-		points = append(points, fmt.Sprintf(`[%d,"%g"]`, guardStart+i*step, value(i)))
+		points = append(points, fmt.Sprintf(`[%d,"%g"]`, guardStart+i*step+offset, value(i)))
 	}
 	return fmt.Sprintf(`{"metric":%s,"values":[%s]}`, labels, strings.Join(points, ","))
 }
@@ -81,12 +85,12 @@ func TestSimpleLimitQueriesCFSIndependentOfClassifier(t *testing.T) {
 		t.Fatalf("simple query set changed: %v", got)
 	}
 	cfg := config.Default("simple_limit")
-	want := []string{"CPUUsage", "MemoryUsage", "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods"}
+	want := []string{"CPUUsage", "MemoryUsage", "CPUThrottledSeconds", "CPUThrottledPeriods", "CPUPeriods", "CPUQuota", "CPUPeriod"}
 	if got := MetricsForStrategy(cfg); !slices.Equal(got, want) {
 		t.Fatalf("simple_limit without classifier: got %v, want %v", got, want)
 	}
 	cfg.ClassifyWorkloads = true
-	if got := MetricsForStrategy(cfg); len(got) != 6 || !slices.Contains(got, "OOMKilledTimestamp") {
+	if got := MetricsForStrategy(cfg); len(got) != 8 || !slices.Contains(got, "OOMKilledTimestamp") {
 		t.Fatalf("classifier should add only OOM data: %v", got)
 	}
 	object := guardObject()
@@ -128,9 +132,13 @@ func TestCFSSourceCompleteIsConservative(t *testing.T) {
 	}{
 		{"verified runtime IDs", verified, true},
 		{"pod status ID fallback", respondAll(unlabeledSeries), false},
-		{"duplicate scrape", respondAll(
+		{"identical scrape mirrors", respondAll(
 			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"kubelet"}`,
-			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"cadvisor"}`), false},
+			`{"namespace":"demo","pod":"pod","container":"app","uid":"pod-uid","id":"/kubepods/pod-pod-uid/cri-containerd-abc.scope","job":"cadvisor"}`), true},
+		{"conflicting mirrors", func(q string) (int, string) {
+			other := strings.TrimSuffix(labeledSeries, "}") + `,"job":"mirror"}`
+			return 200, matrixBody(matrixRow(labeledSeries, 60, 2, counter), matrixRow(other, 60, 2, func(int) float64 { return 10 }))
+		}, false},
 		{"missing CFS series", func(q string) (int, string) {
 			if strings.Contains(q, "cfs") {
 				return 200, matrixBody()
@@ -262,6 +270,10 @@ func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
 			client, _ := fakePrometheus(t, cfg, func(query string) (int, string) {
 				oldValue, currentValue := func(int) float64 { return 0 }, func(int) float64 { return 0 }
 				switch {
+				case strings.HasPrefix(query, "container_spec_cpu_quota"):
+					currentValue = func(int) float64 { return 200000 }
+				case strings.HasPrefix(query, "container_spec_cpu_period"):
+					currentValue = func(int) float64 { return 100000 }
 				case strings.HasPrefix(query, "container_cpu_usage_seconds_total"):
 					currentValue = func(i int) float64 { return .6 * float64(i) }
 					oldValue = currentValue
@@ -296,6 +308,164 @@ func TestSimpleLimitVerifiesRestartedContainer(t *testing.T) {
 			})
 			if heldUnderPressure != tc.pressure {
 				t.Fatalf("throttling outcome=%t want %t", heldUnderPressure, tc.pressure)
+			}
+		})
+	}
+}
+
+func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
+	cfg := config.Default("simple_limit")
+	cfg.ClassifyWorkloads = true
+	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+	const points = 180
+	for _, tc := range []struct {
+		verified, offset int
+		wantCut          bool
+	}{{0, 0, false}, {1, 0, false}, {5, 0, true}, {1, -3, false}, {6, -3, true}} {
+		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
+			value := func(int) float64 { return 0 }
+			switch {
+			case strings.HasPrefix(q, "container_cpu_usage_seconds_total"):
+				value = func(i int) float64 { return .6 * float64(i) }
+			case strings.HasPrefix(q, "container_memory_working_set_bytes"):
+				value = func(int) float64 { return 100 << 20 }
+			case strings.HasPrefix(q, "kube_pod_container_"):
+				return 200, matrixBody()
+			case strings.HasPrefix(q, "container_cpu_cfs_throttled_periods_total"):
+				value = func(i int) float64 { return float64(min(i, points-5)) }
+			case strings.HasPrefix(q, "container_cpu_cfs_periods_total"):
+				value = counter
+			case strings.HasPrefix(q, "container_spec_cpu_quota"):
+				value = func(i int) float64 {
+					if i == 1 {
+						return -1
+					} // The first scrape had no quota.
+					if i <= points-tc.verified {
+						return 400000
+					}
+					return 200000
+				}
+			case strings.HasPrefix(q, "container_spec_cpu_period"):
+				value = func(int) float64 { return 100000 }
+			}
+			// Exact duplicate scrapes are equivalent to a single sample stream.
+			other := strings.TrimSuffix(labeledSeries, "}") + `,"job":"mirror"}`
+			offset := 0
+			if strings.HasPrefix(q, "container_cpu_cfs_") {
+				offset = tc.offset
+			}
+			return 200, matrixBody(matrixRowWithOffset(labeledSeries, 60, points, offset, value), matrixRowWithOffset(other, 60, points, offset, value))
+		})
+		end := time.Unix(guardStart+60*points, 0)
+		obj := guardObject()
+		obj.ObservedAt, obj.InventoryAvailable = end.UnixMilli(), true
+		obj.Allocations = model.EmptyAllocations()
+		obj.Allocations.Requests[model.CPU], obj.Allocations.Limits[model.CPU] = model.Number(1), model.Number(2)
+		obj.Pods[0].Allocations = obj.Allocations
+		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
+		result, err := strategy.Run(cfg, metrics, obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(result.Analysis.Classifications[0].Features, analysis.FeatureCPUThrottled) {
+			t.Fatal("pre-resize throttling disappeared from the release classification")
+		}
+		cpu := result.Resources[model.CPU]
+		if cpu.Request.Value >= 1 || (cpu.Limit.Value < 2) != tc.wantCut {
+			t.Fatalf("%+v produced %+v", tc, cpu)
+		}
+	}
+}
+
+func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
+	const points = 180
+	for _, tc := range []struct{ bursts, zeroLimit bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		cfg := config.Default("simple_limit")
+		cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
+		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
+			if strings.HasPrefix(q, "container_spec_cpu_") {
+				t.Error("uncapped container unnecessarily queried for quota")
+			}
+			if !strings.HasPrefix(q, "container_cpu_usage_seconds_total") {
+				return 200, matrixBody()
+			}
+			var total float64
+			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(i int) float64 {
+				rate := .020
+				if tc.bursts && (i == 10 || i == 30 || i == 50) {
+					rate = .800
+				}
+				total += 60 * rate
+				return total
+			}))
+		})
+		end := time.Unix(guardStart+60*points, 0)
+		obj := guardObject()
+		obj.InventoryAvailable, obj.ObservedAt = true, end.UnixMilli()
+		obj.Allocations = model.EmptyAllocations()
+		obj.Allocations.Requests[model.CPU] = model.Number(.1)
+		if tc.zeroLimit {
+			obj.Allocations.Requests[model.CPU], obj.Allocations.Limits[model.CPU] = model.Number(0), model.Number(0)
+		}
+		obj.Pods[0].Allocations = obj.Allocations
+		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
+		got, err := strategy.Run(cfg, metrics, obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := got.Resources[model.CPU].Limit
+		if (limit.Set && limit.Value > 0) == tc.bursts {
+			t.Fatalf("%+v: %+v", tc, got.Resources[model.CPU])
+		}
+		held := slices.ContainsFunc(got.Analysis.Results, func(r analysis.ResourceAnalysis) bool {
+			return r.Resource == analysis.ResourceCPU && slices.Contains(r.Notices, analysis.ReasonCPULimitBelowDemand)
+		})
+		if held != tc.bursts {
+			t.Fatalf("%+v: recurring-demand veto=%t", tc, held)
+		}
+	}
+}
+
+func TestCurrentCRIOCgroupfsSamples(t *testing.T) {
+	obj := guardObject()
+	obj.Pods[0].ContainerID = "cri-o://abc"
+	labels := `{"namespace":"demo","pod":"pod","container":"app","id":"/kubepods/burstable/podpod-uid/crio-abc"}`
+	client, _ := fakePrometheus(t, config.Default("simple"), respondAll(labels))
+	metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), time.Unix(guardStart+120, 0))
+	if len(metrics.CPU) != 1 || len(metrics.CPU[0].Samples) != 2 || len(metrics.Memory) != 1 || len(metrics.Memory[0].Samples) != 2 {
+		t.Fatalf("running CRI-O cgroupfs samples disappeared: %+v", metrics)
+	}
+}
+
+func TestAppliedQuotaBracketsNativeCounterTimes(t *testing.T) {
+	series := func(times []int64, value float64) []analysis.Series {
+		s := analysis.Series{ID: "runtime"}
+		for _, ts := range times {
+			s.Samples = append(s.Samples, analysis.Sample{Timestamp: ts, Value: value})
+		}
+		return []analysis.Series{s}
+	}
+	cfs := []int64{60, 120, 180, 240, 300, 360}
+	for _, tc := range []struct {
+		name          string
+		quota, period []int64
+		start         int64
+	}{
+		{"native collection precedes scrape", []int64{63, 123, 183, 243, 303, 363}, []int64{63, 123, 183, 243, 303, 363}, 120},
+		{"missing spec scrape cannot bridge interval", []int64{63, 123, 303, 363}, []int64{63, 123, 303, 363}, 300},
+		{"quota omitted while period remains", []int64{63, 123, 303, 363}, []int64{63, 123, 183, 243, 303, 363}, 360},
+		{"missing latest scrape", []int64{63, 123, 183, 243, 303}, []int64{63, 123, 183, 243, 303}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := atAppliedQuota(series(cfs, 0), series(tc.quota, 200000), series(tc.period, 100000), 2)
+			if tc.start == 0 {
+				if len(got) != 0 {
+					t.Fatal("unbracketed latest CFS accepted")
+				}
+				return
+			}
+			if len(got) != 1 || got[0].CPUGuardStart != tc.start || len(got[0].Samples) != len(cfs) {
+				t.Fatalf("want start %d without lost classification; got %+v", tc.start, got)
 			}
 		})
 	}

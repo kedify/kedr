@@ -30,7 +30,7 @@ func TestSamplePairDecoding(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, want)
 			}
 			if got.Value < 0 || math.IsNaN(got.Value) || math.IsInf(got.Value, 0) {
-				if _, err := nativeSamples([]series{{Values: []samplePair{got}}}); err == nil {
+				if _, err := nativeSamples([]series{{Values: []samplePair{got}}}, "CPUUsage"); err == nil {
 					t.Fatal("invalid usage sample accepted")
 				}
 			}
