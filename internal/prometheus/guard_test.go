@@ -379,7 +379,7 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 
 func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 	const points = 180
-	for _, bursts := range []bool{false, true} {
+	for _, tc := range []struct{ bursts, zeroLimit bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		cfg := config.Default("simple_limit")
 		cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
 		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
@@ -392,7 +392,7 @@ func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 			var total float64
 			return 200, matrixBody(matrixRow(labeledSeries, 60, points, func(i int) float64 {
 				rate := .020
-				if bursts && (i == 10 || i == 30 || i == 50) {
+				if tc.bursts && (i == 10 || i == 30 || i == 50) {
 					rate = .800
 				}
 				total += 60 * rate
@@ -404,8 +404,8 @@ func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 		obj.InventoryAvailable, obj.ObservedAt = true, end.UnixMilli()
 		obj.Allocations = model.EmptyAllocations()
 		obj.Allocations.Requests[model.CPU] = model.Number(.1)
-		if bursts {
-			obj.Allocations.Limits[model.CPU] = model.Number(0)
+		if tc.zeroLimit {
+			obj.Allocations.Requests[model.CPU], obj.Allocations.Limits[model.CPU] = model.Number(0), model.Number(0)
 		}
 		obj.Pods[0].Allocations = obj.Allocations
 		metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), end)
@@ -414,8 +414,14 @@ func TestNewCapUsesCurrentUsageWithoutCFS(t *testing.T) {
 			t.Fatal(err)
 		}
 		limit := got.Resources[model.CPU].Limit
-		if (limit.Set && limit.Value > 0) == bursts {
-			t.Fatalf("bursts=%t: %+v", bursts, got.Resources[model.CPU])
+		if (limit.Set && limit.Value > 0) == tc.bursts {
+			t.Fatalf("%+v: %+v", tc, got.Resources[model.CPU])
+		}
+		held := slices.ContainsFunc(got.Analysis.Results, func(r analysis.ResourceAnalysis) bool {
+			return r.Resource == analysis.ResourceCPU && slices.Contains(r.Notices, analysis.ReasonCPULimitBelowDemand)
+		})
+		if held != tc.bursts {
+			t.Fatalf("%+v: recurring-demand veto=%t", tc, held)
 		}
 	}
 }
