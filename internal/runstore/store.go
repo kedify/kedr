@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"time"
 
@@ -97,7 +98,9 @@ func NewRow(scan model.Scan, metrics strategy.Metrics, conn Connection) Row {
 	// Arbitrary annotations and labels are not required for explanations and may
 	// contain credentials. Do not include them in local snapshots.
 	row.Scan.Object.Labels, row.Scan.Object.Annotations = nil, nil
-	for _, pod := range scan.Object.Pods {
+	// Report sorting must not reorder the saved Pods independently of their identities.
+	row.Scan.Object.Pods = slices.Clone(scan.Object.Pods)
+	for _, pod := range row.Scan.Object.Pods {
 		row.Identity.Pods = append(row.Identity.Pods, Pod{Name: pod.Name, UID: pod.UID, Release: pod.Release, CreatedAt: pod.CreatedAt, EndedAt: pod.EndedAt, ContainerStartedAt: pod.ContainerStartedAt, ContainerID: pod.ContainerID})
 	}
 	row.Digest, _ = row.MetricsDigest(metrics)

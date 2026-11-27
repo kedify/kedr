@@ -136,6 +136,12 @@ func TestSavedPodDeletionSurvivesRefetch(t *testing.T) {
 		{Name: "reused", UID: "current", Release: "same-release", ContainerID: "containerd://current"},
 	}}}
 	row := NewRow(scan, strategy.Metrics{}, Connection{})
+	// The app sorts the report after creating the saved row. A reused name
+	// moves the current Pod ahead of its deleted predecessor.
+	model.SortObjectsFromScans([]model.Scan{scan})
+	if scan.Object.Pods[0].UID != "current" {
+		t.Fatal("fixture did not reorder the Pods")
+	}
 	saved, err := json.Marshal(row)
 	if err != nil {
 		t.Fatal(err)
