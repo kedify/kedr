@@ -154,3 +154,20 @@ func TestLegacyZeroLimitCannotAuthorizeFirstCap(t *testing.T) {
 		t.Fatal("legacy zero limit accepted a first finite cap")
 	}
 }
+
+func TestSavedMemoryGuards(t *testing.T) {
+	out := &analysis.Output{DetectorVersion: analysis.ResourceRightSizeDetectorVersion}
+	res := analysis.ResourceAnalysis{Resource: analysis.ResourceMemory, Recommendations: []analysis.Recommendation{{Setting: analysis.SettingRequests, CurrentValue: 256, SuggestedValue: 128}}}
+	if !lacksSavedGuards(out, res) {
+		t.Fatal("memory decrease accepted without saved guards")
+	}
+	out.EffectivePolicy.Memory.SafetyGuards = true
+	if lacksSavedGuards(out, res) {
+		t.Fatal("guarded memory decrease held")
+	}
+	res.Recommendations[0].SuggestedValue = 512
+	res.OOMAdjustment = &analysis.OOMAdjustment{UsedCurrentFallback: true}
+	if !lacksSavedGuards(out, res) {
+		t.Fatal("current-limit fallback used as a historical OOM floor")
+	}
+}

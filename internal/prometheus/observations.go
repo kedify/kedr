@@ -107,8 +107,14 @@ func (c *Client) GatherWindow(ctx context.Context, object model.Object, start, e
 		result.CPU = withCurrentRuntime(result.CPU, verified["CPUUsage"], object.Container, object.Release)
 		limit := object.Allocations.Limits[model.CPU]
 		if limit.Set && !limit.Unknown {
+			quotaUnverified := false
 			for _, family := range cfsFamilies {
+				before := len(verified[family])
 				verified[family] = atAppliedQuota(verified[family], verified["CPUQuota"], verified["CPUPeriod"], limit.Value)
+				quotaUnverified = quotaUnverified || before > len(verified[family])
+			}
+			if quotaUnverified {
+				warnings = append(warnings, "CPUQuotaHistoryUnverified")
 			}
 		}
 	}
@@ -366,22 +372,35 @@ func atAppliedQuota(counters, quotas, periods []analysis.Series, limit float64) 
 		if counter.ID != quota.ID || counter.ID != period.ID {
 			return nil
 		}
+		// cAdvisor timestamps CFS counters at collection and specification gauges
+		// at scrape. Both quota gauges share a scrape timestamp with one another.
 		q, p := len(quota.Samples)-1, len(period.Samples)-1
-		first := len(counter.Samples)
-		for first > 0 && q >= 0 && p >= 0 {
-			ts := counter.Samples[first-1].Timestamp
-			if quota.Samples[q].Timestamp != ts || period.Samples[p].Timestamp != ts || period.Samples[p].Value <= 0 ||
-				math.Abs(quota.Samples[q].Value/period.Samples[p].Value-limit) > 1e-9 {
-				break
-			}
-			first--
+		for q >= 0 && p >= 0 && quota.Samples[q].Timestamp == period.Samples[p].Timestamp && period.Samples[p].Value > 0 &&
+			math.Abs(quota.Samples[q].Value/period.Samples[p].Value-limit) <= 1e-9 {
 			q--
 			p--
 		}
-		if first == len(counter.Samples) {
+		atQuota := quota.Samples[q+1:]
+		if len(atQuota) == 0 || len(counter.Samples) == 0 {
 			return nil
 		}
-		// Classification keeps the full lifetime. Only proof is bounded by quota.
+		first := len(counter.Samples) - 1
+		latest := counter.Samples[first].Timestamp
+		if latest < atQuota[0].Timestamp || latest > atQuota[len(atQuota)-1].Timestamp {
+			return nil
+		}
+		// Each interval must lie inside the matching quota span and contain a
+		// distinct confirming scrape. An observation gap ends the proof suffix.
+		g := len(atQuota) - 1
+		for first > 0 && counter.Samples[first-1].Timestamp >= atQuota[0].Timestamp {
+			for g >= 0 && atQuota[g].Timestamp > counter.Samples[first].Timestamp {
+				g--
+			}
+			if g < 0 || atQuota[g].Timestamp <= counter.Samples[first-1].Timestamp {
+				break
+			}
+			first--
+		}
 		counters[i].CPUGuardStart = counter.Samples[first].Timestamp
 	}
 	return counters

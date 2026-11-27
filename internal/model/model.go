@@ -187,6 +187,7 @@ type Object struct {
 	ObservedAt                  int64              `json:"-" yaml:"-"`
 	ReleaseStartedAt            int64              `json:"-" yaml:"-"`
 	RollbackIntervalStart       int64              `json:"-" yaml:"-"`
+	WorkloadCreatedAt           int64              `json:"-" yaml:"-"`
 	DeploymentCompletedAt       int64              `json:"-" yaml:"-"`
 	DeploymentCompletionMessage string             `json:"-" yaml:"-"`
 	RolloutBoundaryVerified     bool               `json:"-" yaml:"-"`

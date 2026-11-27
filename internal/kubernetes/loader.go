@@ -357,6 +357,10 @@ func selectorString(selector *metav1.LabelSelector) string {
 }
 func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector string, containers []corev1.Container, hpas map[hpaKey]*model.HPA) []model.Object {
 	out := make([]model.Object, 0, len(containers))
+	var createdAt int64
+	if !meta.CreationTimestamp.IsZero() {
+		createdAt = meta.CreationTimestamp.UnixMilli()
+	}
 	objectLabels := meta.Labels
 	if objectLabels == nil {
 		objectLabels = map[string]string{}
@@ -366,7 +370,7 @@ func (l *Loader) objects(cluster *string, meta metav1.ObjectMeta, kind, selector
 		objectAnnotations = map[string]string{}
 	}
 	for _, container := range containers {
-		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Image: container.Image, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID), Generation: meta.Generation, ObservedAt: time.Now().UnixMilli()})
+		out = append(out, model.Object{Cluster: cluster, Name: meta.Name, Namespace: meta.Namespace, Kind: kind, Container: container.Name, Image: container.Image, Pods: []model.Pod{}, Allocations: allocations(container), HPA: hpas[hpaKey{meta.Namespace, kind, meta.Name}], Warnings: []string{}, Labels: objectLabels, Annotations: objectAnnotations, Selector: selector, UID: string(meta.UID), WorkloadCreatedAt: createdAt, Generation: meta.Generation, ObservedAt: time.Now().UnixMilli()})
 	}
 	return out
 }

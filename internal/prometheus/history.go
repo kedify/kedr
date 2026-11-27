@@ -37,15 +37,22 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 	}
 	releases := map[string]model.Release{}
 	ownerRelease := map[string]string{}
+	liveOwners := map[string]model.Release{}
+	if object.Kind == "StatefulSet" || object.Kind == "DaemonSet" {
+		liveOwners[object.Name] = model.Release{OwnerUID: object.UID, CreatedAt: object.WorkloadCreatedAt}
+	}
 	for _, release := range object.Releases {
 		releases[release.ID] = release
 		if release.OwnerUID != "" {
 			ownerRelease[release.OwnerUID] = release.ID
+			liveOwners[release.Name] = release
 		}
 	}
+	ownerKind := object.Kind
 	var ownerMatcher string
 	switch object.Kind {
 	case "Deployment", "Rollout":
+		ownerKind = "ReplicaSet"
 		rows, ok := values("kube_replicaset_owner", fmt.Sprintf(",owner_kind=%q,owner_name=%q,owner_is_controller=\"true\"", object.Kind, object.Name))
 		for _, row := range rows {
 			if !positive(row) || row.Metric["replicaset"] == "" {
@@ -99,9 +106,18 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 	}
 	// Metadata is batched by discovered pod names, not guessed name prefixes.
 	names := map[string]bool{}
+	key := func(labels map[string]string) string { return labels["pod"] + "\x00" + labels["uid"] }
+	parents := map[string]map[string]bool{}
 	for _, row := range owners {
 		if positive(row) && row.Metric["pod"] != "" {
 			names[row.Metric["pod"]] = true
+			if parent := row.Metric["owner_uid"]; parent != "" {
+				id := key(row.Metric)
+				if parents[id] == nil {
+					parents[id] = map[string]bool{}
+				}
+				parents[id][parent] = true
+			}
 		}
 	}
 	ordered := make([]string, 0, len(names))
@@ -125,11 +141,14 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 			labels = append(labels, rows...)
 		}
 	}
-	key := func(labels map[string]string) string { return labels["pod"] + "\x00" + labels["uid"] }
 	births := map[string]int64{}
 	for _, row := range created {
 		if ts := timestampValue(row); ts > 0 {
-			births[key(row.Metric)] = ts
+			id := key(row.Metric)
+			if previous, exists := births[id]; exists && previous != ts {
+				ts = 0
+			}
+			births[id] = ts
 		}
 	}
 	images := map[string]string{}
@@ -153,14 +172,24 @@ func (c *Client) HistoricalPods(ctx context.Context, object model.Object) model.
 		if !positive(row) || name == "" || known[key(row.Metric)] {
 			continue
 		}
+		id := key(row.Metric)
+		createdAt := births[id]
 		parent := row.Metric["owner_uid"]
+		// Stock KSM carries the Pod UID and controller name. A Pod born strictly
+		// after the live controller excludes Pods from a same-name predecessor.
+		// Never use this fallback for a retired owner or against explicit UIDs.
+		if parent == "" && len(parents[id]) == 0 && row.Metric["owner_kind"] == ownerKind && row.Metric["owner_is_controller"] == "true" {
+			owner := liveOwners[row.Metric["owner_name"]]
+			if owner.CreatedAt > 0 && createdAt > owner.CreatedAt {
+				parent = owner.OwnerUID
+			}
+		}
 		release := ownerRelease[parent]
 		verified := parent != "" && parent == object.UID && object.Name == row.Metric["owner_name"]
 		if object.Kind == "Deployment" || object.Kind == "Rollout" {
 			verified = release != "" && releases[release].Name == row.Metric["owner_name"]
 		}
-		createdAt := births[key(row.Metric)]
-		if uid == "" || !verified || createdAt == 0 {
+		if uid == "" || !verified || createdAt == 0 || len(parents[id]) > 1 {
 			warn("HistoricalPodIdentityUnverified")
 			continue
 		}

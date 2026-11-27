@@ -34,9 +34,13 @@ func matrixBody(rows ...string) string {
 }
 
 func matrixRow(labels string, step, count int, value func(i int) float64) string {
+	return matrixRowWithOffset(labels, step, count, 0, value)
+}
+
+func matrixRowWithOffset(labels string, step, count, offset int, value func(i int) float64) string {
 	points := make([]string, 0, count)
 	for i := 1; i <= count; i++ {
-		points = append(points, fmt.Sprintf(`[%d,"%g"]`, guardStart+i*step, value(i)))
+		points = append(points, fmt.Sprintf(`[%d,"%g"]`, guardStart+i*step+offset, value(i)))
 	}
 	return fmt.Sprintf(`{"metric":%s,"values":[%s]}`, labels, strings.Join(points, ","))
 }
@@ -314,7 +318,10 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 	cfg.ClassifyWorkloads = true
 	cfg.MinimumHistoryHours, cfg.PointsRequired = 1, 2
 	const points = 180
-	for _, verified := range []int{0, 1, 5} {
+	for _, tc := range []struct {
+		verified, offset int
+		wantCut          bool
+	}{{0, 0, false}, {1, 0, false}, {5, 0, true}, {1, -3, false}, {6, -3, true}} {
 		client, _ := fakePrometheus(t, cfg, func(q string) (int, string) {
 			value := func(int) float64 { return 0 }
 			switch {
@@ -333,7 +340,7 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 					if i == 1 {
 						return -1
 					} // The first scrape had no quota.
-					if i <= points-verified {
+					if i <= points-tc.verified {
 						return 400000
 					}
 					return 200000
@@ -343,7 +350,11 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 			}
 			// Exact duplicate scrapes are equivalent to a single sample stream.
 			other := strings.TrimSuffix(labeledSeries, "}") + `,"job":"mirror"}`
-			return 200, matrixBody(matrixRow(labeledSeries, 60, points, value), matrixRow(other, 60, points, value))
+			offset := 0
+			if strings.HasPrefix(q, "container_cpu_cfs_") {
+				offset = tc.offset
+			}
+			return 200, matrixBody(matrixRowWithOffset(labeledSeries, 60, points, offset, value), matrixRowWithOffset(other, 60, points, offset, value))
 		})
 		end := time.Unix(guardStart+60*points, 0)
 		obj := guardObject()
@@ -360,8 +371,8 @@ func TestQuotaResizeRequiresIntervalsAtCurrentQuota(t *testing.T) {
 			t.Fatal("pre-resize throttling disappeared from the release classification")
 		}
 		cpu := result.Resources[model.CPU]
-		if cpu.Request.Value >= 1 || (cpu.Limit.Value < 2) != (verified == 5) {
-			t.Fatalf("%d matching samples produced %+v", verified, cpu)
+		if cpu.Request.Value >= 1 || (cpu.Limit.Value < 2) != tc.wantCut {
+			t.Fatalf("%+v produced %+v", tc, cpu)
 		}
 	}
 }
@@ -413,5 +424,39 @@ func TestCurrentCRIOCgroupfsSamples(t *testing.T) {
 	metrics, _ := client.GatherWindow(context.Background(), obj, time.Unix(guardStart, 0), time.Unix(guardStart+120, 0))
 	if len(metrics.CPU) != 1 || len(metrics.CPU[0].Samples) != 2 || len(metrics.Memory) != 1 || len(metrics.Memory[0].Samples) != 2 {
 		t.Fatalf("running CRI-O cgroupfs samples disappeared: %+v", metrics)
+	}
+}
+
+func TestAppliedQuotaBracketsNativeCounterTimes(t *testing.T) {
+	series := func(times []int64, value float64) []analysis.Series {
+		s := analysis.Series{ID: "runtime"}
+		for _, ts := range times {
+			s.Samples = append(s.Samples, analysis.Sample{Timestamp: ts, Value: value})
+		}
+		return []analysis.Series{s}
+	}
+	cfs := []int64{60, 120, 180, 240, 300, 360}
+	for _, tc := range []struct {
+		name          string
+		quota, period []int64
+		start         int64
+	}{
+		{"native collection precedes scrape", []int64{63, 123, 183, 243, 303, 363}, []int64{63, 123, 183, 243, 303, 363}, 120},
+		{"missing spec scrape cannot bridge interval", []int64{63, 123, 303, 363}, []int64{63, 123, 303, 363}, 300},
+		{"quota omitted while period remains", []int64{63, 123, 303, 363}, []int64{63, 123, 183, 243, 303, 363}, 360},
+		{"missing latest scrape", []int64{63, 123, 183, 243, 303}, []int64{63, 123, 183, 243, 303}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := atAppliedQuota(series(cfs, 0), series(tc.quota, 200000), series(tc.period, 100000), 2)
+			if tc.start == 0 {
+				if len(got) != 0 {
+					t.Fatal("unbracketed latest CFS accepted")
+				}
+				return
+			}
+			if len(got) != 1 || got[0].CPUGuardStart != tc.start || len(got[0].Samples) != len(cfs) {
+				t.Fatalf("want start %d without lost classification; got %+v", tc.start, got)
+			}
+		})
 	}
 }

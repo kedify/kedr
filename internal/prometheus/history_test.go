@@ -150,3 +150,41 @@ func TestRecreatedOwnersAndMissingUIDCannotSupplyHistory(t *testing.T) {
 		t.Fatalf("wrong historical membership: %+v", got.Pods)
 	}
 }
+
+func TestStockKSMHistoryRequiresLiveControllerLifetime(t *testing.T) {
+	const born = 1800000000
+	for _, kind := range []string{"Deployment", "StatefulSet"} {
+		t.Run(kind, func(t *testing.T) {
+			const release = "controller-revision-hash:current"
+			object := model.Object{Name: "app", Namespace: "ns", Container: "main", UID: "current-workload", Kind: kind, Release: release, WorkloadCreatedAt: born * 1000}
+			ownerName, ownerUID, ownerKind := "app", object.UID, kind
+			if kind == "Deployment" {
+				ownerName, ownerUID, ownerKind = "app-rs", "current-rs", "ReplicaSet"
+				object.Releases = []model.Release{{ID: release, Name: ownerName, OwnerUID: ownerUID, CreatedAt: born * 1000}}
+			}
+			data := map[string][]series{}
+			for _, tc := range []struct {
+				name, uid, parent string
+				created           int
+			}{
+				{"native-after", "pod-ok", "", born + 1}, {"native-before", "pod-old", "", born - 1}, {"same-second", "pod-uncertain", "", born},
+				{"explicit-other", "pod-other", "foreign-owner", born + 1}, {"no-pod-uid", "", "", born + 1}, {"no-birth", "pod-undated", "", 0},
+				{"birth-conflict", "pod-date", "", born - 1}, {"birth-conflict", "pod-date", "", born + 1},
+				{"mixed-mirror", "pod-mixed", "foreign-owner", born + 1}, {"mixed-mirror", "pod-mixed", "", born + 1},
+				{"conflict", "pod-conflict", ownerUID, born + 1}, {"conflict", "pod-conflict", "foreign-owner", born + 1},
+			} {
+				labels := map[string]string{"pod": tc.name, "uid": tc.uid, "owner_name": ownerName, "owner_kind": ownerKind, "owner_is_controller": "true"}
+				if tc.parent != "" {
+					labels["owner_uid"] = tc.parent
+				}
+				data["kube_pod_owner"] = append(data["kube_pod_owner"], metadata(labels, 1))
+				data["kube_pod_created"] = append(data["kube_pod_created"], metadata(map[string]string{"pod": tc.name, "uid": tc.uid}, float64(tc.created)))
+				data["kube_pod_labels"] = append(data["kube_pod_labels"], metadata(map[string]string{"pod": tc.name, "uid": tc.uid, "label_controller_revision_hash": "current"}, 1))
+			}
+			got := historyClient(t, config.Default("simple"), data).HistoricalPods(context.Background(), object)
+			if len(got.Pods) != 1 || got.Pods[0].UID != "pod-ok" || got.Pods[0].Release != release {
+				t.Fatalf("wrong temporal attribution: %+v", got.Pods)
+			}
+		})
+	}
+}

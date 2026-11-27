@@ -386,9 +386,13 @@ The Prometheus-compatible service should expose:
 
 - `container_cpu_usage_seconds_total`
 - `container_memory_working_set_bytes`
+- For finite CPU limit reductions, the three `container_cpu_cfs_*` counters above
+  and `container_spec_cpu_quota` and `container_spec_cpu_period` from cAdvisor.
 - Historical ownership: `kube_pod_owner`, and `kube_replicaset_owner` for
-  Deployments/Rollouts. Sizing deleted Pods requires a verified chain of controller
-  UIDs, the Pod UID, and its creation time. Sources exposing names alone cannot provide this history.
+  Deployments/Rollouts. Historical Pods need their own UID and creation time.
+  Stock KSM can attribute a Pod born after its still-live controller using its
+  controller name and the creation time verified from Kubernetes. Deleted
+  controllers require enriched owner UIDs throughout the chain.
 - Historical metadata: `kube_pod_created`, `kube_replicaset_created`, and
   `kube_pod_container_info`; `kube_pod_labels` supplies controller revisions when
   that pod label is allowed in KSM.
