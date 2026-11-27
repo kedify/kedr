@@ -106,9 +106,15 @@ func NewRow(scan model.Scan, metrics strategy.Metrics, conn Connection) Row {
 func (r Row) Object() model.Object {
 	o := r.Scan.Object
 	o.UID, o.Release = r.Identity.UID, r.Identity.Release
+	savedPods := o.Pods
 	o.Pods = make([]model.Pod, len(r.Identity.Pods))
 	for i, pod := range r.Identity.Pods {
 		o.Pods[i] = model.Pod{Name: pod.Name, UID: pod.UID, Release: pod.Release, CreatedAt: pod.CreatedAt, EndedAt: pod.EndedAt, ContainerStartedAt: pod.ContainerStartedAt, ContainerID: pod.ContainerID}
+		// NewRow records both views in the same order. The report view already
+		// preserves deletion and the hidden identity distinguishes reused names.
+		if i < len(savedPods) && savedPods[i].Name == pod.Name {
+			o.Pods[i].Deleted = savedPods[i].Deleted
+		}
 	}
 	return o
 }

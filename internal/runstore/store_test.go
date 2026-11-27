@@ -129,3 +129,23 @@ func TestDigestCanonicalAndSensitiveToSamples(t *testing.T) {
 		t.Fatal("changed metric not detected")
 	}
 }
+
+func TestSavedPodDeletionSurvivesRefetch(t *testing.T) {
+	scan := model.Scan{Object: model.Object{Release: "same-release", Pods: []model.Pod{
+		{Name: "reused", UID: "old", Release: "same-release", Deleted: true},
+		{Name: "reused", UID: "current", Release: "same-release", ContainerID: "containerd://current"},
+	}}}
+	row := NewRow(scan, strategy.Metrics{}, Connection{})
+	saved, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = Row{}
+	if err := json.Unmarshal(saved, &row); err != nil {
+		t.Fatal(err)
+	}
+	pods := row.Object().Pods
+	if len(pods) != 2 || pods[0].UID != "old" || !pods[0].Deleted || pods[1].UID != "current" || pods[1].Deleted {
+		t.Fatalf("refetch lost Pod identity or deletion state: %+v", pods)
+	}
+}
